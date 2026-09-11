@@ -1,0 +1,6 @@
+node_modules/
+dist/
+/sources/
+/release/
+*.tgz
+.DS_Store
