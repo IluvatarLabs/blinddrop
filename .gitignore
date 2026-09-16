@@ -4,3 +4,10 @@ dist/
 /release/
 *.tgz
 .DS_Store
+
+# Local worktrees and plan scratch
+.worktrees/
+.superpowers/
+# Desktop app build products and vendored runtime tarball
+desktop/out/
+desktop/vendor/

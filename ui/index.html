@@ -1,0 +1,968 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BlindDrop</title>
+<style>
+:root {
+  color-scheme: light dark;
+  --bg: #f4f5f7;
+  --panel: #ffffff;
+  --input: #ffffff;
+  --btn: #fbfbfc;
+  --text: #17181c;
+  --muted: #5d6270;
+  --line: #d8dae1;
+  --accent: #2f56c8;
+  --accent-text: #ffffff;
+  --danger: #a72b22;
+  --danger-bg: #fbeceb;
+  --ok: #1a6b33;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #15161a;
+    --panel: #1e1f25;
+    --input: #16171b;
+    --btn: #282a31;
+    --text: #e8e9ee;
+    --muted: #9ba0ad;
+    --line: #32343d;
+    --accent: #89a6ff;
+    --accent-text: #11141c;
+    --danger: #ff9e93;
+    --danger-bg: #3a1e1c;
+    --ok: #79d493;
+  }
+}
+[hidden] { display: none !important; }
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  font-size: 15px;
+  line-height: 1.5;
+}
+.wrap { max-width: 1000px; margin: 0 auto; padding: 18px 20px 48px; }
+section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; margin: 0 0 16px; }
+h1 { margin: 0; font-size: 16px; letter-spacing: .01em; }
+h2 { margin: 0 0 12px; font-size: 12px; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); }
+p { margin: 0 0 10px; }
+p:last-child { margin-bottom: 0; }
+.bar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 12px; }
+.bar .path { flex: 1 1 220px; margin: 0; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; color: var(--muted); overflow-wrap: anywhere; }
+.bar-actions { display: flex; gap: 8px; margin-left: auto; }
+.bar .quit-note { flex-basis: 100%; margin: 0; }
+button { font: inherit; padding: 6px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--btn); color: var(--text); cursor: pointer; }
+button:hover:not(:disabled) { border-color: var(--muted); }
+button:disabled { opacity: .45; cursor: default; }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+button.danger { color: var(--danger); border-color: var(--danger); }
+input[type="text"], input[type="password"], input[type="number"], select, textarea {
+  font: inherit; width: 100%; padding: 7px 9px; border: 1px solid var(--line);
+  border-radius: 8px; background: var(--input); color: var(--text);
+}
+textarea { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; min-height: 130px; resize: vertical; }
+.field { margin: 0 0 12px; }
+.field > label, .label { display: block; margin: 0 0 4px; font-size: 12.5px; color: var(--muted); }
+.hint { margin: 4px 0 0; font-size: 12.5px; color: var(--muted); }
+.row { display: flex; flex-wrap: wrap; gap: 12px; }
+.row > .field { flex: 1 1 150px; margin-bottom: 12px; }
+.banner { margin: 0 0 12px; padding: 8px 10px; border-radius: 8px; background: var(--danger-bg); color: var(--danger); font-size: 13.5px; }
+.banner.ok { background: transparent; color: var(--ok); border: 1px solid currentColor; }
+button[type="submit"] { margin-top: 10px; }
+fieldset { margin: 0 0 12px; padding: 8px 12px 10px; border: 1px solid var(--line); border-radius: 8px; }
+legend { padding: 0 4px; font-size: 12.5px; color: var(--muted); }
+.checks { display: flex; flex-wrap: wrap; gap: 8px 18px; }
+.check { display: flex; align-items: center; gap: 6px; }
+.check label { margin: 0; font-size: 14px; color: var(--text); }
+.columns { display: grid; gap: 16px; margin: 0 0 16px; }
+.columns > section { margin: 0; }
+@media (min-width: 900px) { .columns { grid-template-columns: 1fr 1fr; align-items: start; } }
+ul.items { list-style: none; margin: 0; padding: 0; }
+.item { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 0; border-top: 1px solid var(--line); }
+.item:first-child { border-top: 0; padding-top: 0; }
+.item-name { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; overflow-wrap: anywhere; }
+.item-meta { flex-basis: 100%; margin: 0; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.item-actions { margin-left: auto; display: flex; gap: 6px; }
+.item-actions button { padding: 3px 9px; font-size: 13px; }
+.tag { padding: 1px 7px; border: 1px solid var(--line); border-radius: 999px; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+.tag.on { color: var(--ok); border-color: currentColor; }
+.copyrow { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.copyrow input { flex: 1 1 260px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; }
+.cmd { flex: 1 1 260px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--input); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; overflow-wrap: anywhere; }
+.copyrow button { flex: 0 0 auto; }
+details { margin: 12px 0 0; padding: 10px 0 0; border-top: 1px solid var(--line); }
+summary { width: fit-content; padding: 2px 4px; border-radius: 6px; font-size: 13.5px; color: var(--accent); cursor: pointer; }
+details > form { margin-top: 12px; }
+.notice { max-width: 540px; margin: 16vh auto 0; padding: 0 24px; text-align: center; color: var(--muted); }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+</style>
+</head>
+<body>
+
+<p class="sr-only" id="live" role="status" aria-live="polite"></p>
+
+<div class="notice" id="no-token" hidden>
+  <p>Open this page from the BlindDrop terminal command or the BlindDrop app.</p>
+</div>
+
+<div class="notice" id="gone" hidden>
+  <p>This page is no longer authorized. Return to the terminal or the app and reopen BlindDrop.</p>
+</div>
+
+<div class="notice" id="stopped" hidden>
+  <p>BlindDrop has stopped. You can close this window.</p>
+</div>
+
+<div class="wrap" id="app" hidden>
+
+  <section class="bar">
+    <h1>BlindDrop</h1>
+    <p class="path" id="vault-path"></p>
+    <div class="bar-actions">
+      <button type="button" id="lock-btn" hidden>Lock</button>
+      <button type="button" id="quit-btn">Quit</button>
+    </div>
+    <p class="hint quit-note">Quit stops the BlindDrop helper and every running agent session. Closing this window alone leaves the helper running.</p>
+  </section>
+
+  <p class="banner" id="banner-top" role="alert" hidden></p>
+
+  <section id="auth" hidden>
+    <h2 id="auth-title">Unlock</h2>
+    <p class="banner" id="banner-auth" role="alert" hidden></p>
+
+    <form id="unlock-form" hidden>
+      <div class="field">
+        <label for="unlock-pass">Vault passphrase</label>
+        <input type="password" id="unlock-pass" autocomplete="off" required>
+      </div>
+      <button type="submit" class="primary">Unlock</button>
+    </form>
+
+    <form id="create-form" hidden>
+      <p class="hint">No vault exists at this path yet. The passphrase is never stored and cannot be recovered.</p>
+      <div class="row">
+        <div class="field">
+          <label for="create-pass">New vault passphrase</label>
+          <input type="password" id="create-pass" autocomplete="off" required>
+        </div>
+        <div class="field">
+          <label for="create-confirm">Confirm passphrase</label>
+          <input type="password" id="create-confirm" autocomplete="off" required>
+        </div>
+      </div>
+      <button type="submit" class="primary">Create vault</button>
+    </form>
+  </section>
+
+  <section id="session" hidden>
+    <h2>Agent session</h2>
+    <p class="banner" id="banner-session" role="alert" hidden></p>
+
+    <form id="session-form" hidden>
+      <fieldset>
+        <legend>Allow</legend>
+        <div class="checks" id="allow-list"></div>
+        <p class="hint" id="allow-empty" hidden>No enabled connections yet. Add one under Connections first.</p>
+      </fieldset>
+      <div class="row">
+        <div class="field">
+          <label for="ttl">Lifetime (seconds)</label>
+          <input type="number" id="ttl" value="3600" min="1" max="86400" step="1" required>
+          <p class="hint">1 to 86400 seconds.</p>
+        </div>
+        <div class="field">
+          <label for="port">Port</label>
+          <input type="number" id="port" min="0" max="65535" step="1" required>
+          <p class="hint">0 picks a free port.</p>
+        </div>
+      </div>
+      <div class="check">
+        <input type="checkbox" id="session-file" checked>
+        <label for="session-file">Write session file for the Claude Code plugin</label>
+      </div>
+      <p class="hint">The session token authorizes use of the allowed connections, never the vault passphrase or the keys themselves.</p>
+      <button type="submit" class="primary" id="start-btn">Start session</button>
+    </form>
+
+    <div id="session-running" hidden>
+      <div class="bar">
+        <p id="session-until"></p>
+        <div class="bar-actions"><button type="button" id="stop-btn">Stop</button></div>
+      </div>
+      <p class="hint" id="session-connections" hidden></p>
+      <p class="hint" id="session-file-path" hidden></p>
+
+      <div class="field" style="margin-top:12px">
+        <label for="mcp-url">MCP URL</label>
+        <div class="copyrow">
+          <input type="text" id="mcp-url" readonly>
+          <button type="button" id="copy-url">Copy</button>
+        </div>
+      </div>
+
+      <div class="field" id="token-field" hidden>
+        <label for="session-token">Session token</label>
+        <div class="copyrow">
+          <input type="password" id="session-token" readonly autocomplete="off" spellcheck="false">
+          <button type="button" id="token-show" aria-pressed="false">Show</button>
+          <button type="button" id="copy-token">Copy</button>
+        </div>
+      </div>
+
+      <div class="field" id="command-field" hidden>
+        <span class="label" id="command-label">Claude Code command</span>
+        <div class="copyrow">
+          <code class="cmd" id="claude-command"></code>
+          <button type="button" id="copy-command" aria-labelledby="copy-command command-label">Copy</button>
+        </div>
+      </div>
+
+      <p class="hint" id="token-absent" hidden>Token shown only when the session was started from this page.</p>
+      <p class="hint">With the BlindDrop Claude Code plugin installed, Claude Code connects automatically while the session file is on.</p>
+    </div>
+  </section>
+
+  <div class="columns" id="columns" hidden>
+
+    <section id="secrets">
+      <h2>Secrets</h2>
+      <p class="banner" id="banner-secrets" role="alert" hidden></p>
+      <ul class="items" id="secret-list"></ul>
+      <p class="hint" id="secret-empty" hidden>No secrets yet.</p>
+
+      <details id="secret-details">
+        <summary>Add secret</summary>
+        <form id="secret-form">
+          <div class="field">
+            <label for="secret-name">Name</label>
+            <input type="text" id="secret-name" required maxlength="64" spellcheck="false" autocapitalize="off" autocomplete="off"
+              pattern="[A-Za-z0-9](?:[A-Za-z0-9._\-]{0,62}[A-Za-z0-9])?"
+              title="Case-sensitive ASCII identifier of up to 64 characters, with alphanumeric ends and alphanumeric, dot, underscore, or hyphen interiors.">
+            <p class="hint" id="name-help">Local names are case-sensitive ASCII identifiers of up to 64 characters, with alphanumeric ends and alphanumeric, dot, underscore, or hyphen interiors. <code>constructor</code> and <code>prototype</code> are reserved.</p>
+          </div>
+          <div class="field">
+            <label for="secret-value">Value</label>
+            <div class="copyrow">
+              <input type="password" id="secret-value" required autocomplete="off" spellcheck="false">
+              <button type="button" id="secret-value-show" aria-pressed="false">Show</button>
+            </div>
+          </div>
+          <button type="submit" class="primary">Save secret</button>
+        </form>
+      </details>
+    </section>
+
+    <section id="connections">
+      <h2>Connections</h2>
+      <p class="banner" id="banner-connections" role="alert" hidden></p>
+      <ul class="items" id="connection-list"></ul>
+      <p class="hint" id="connection-empty" hidden>No connections yet.</p>
+
+      <details id="connection-details">
+        <summary>Add connection</summary>
+        <form id="connection-form">
+          <div class="field">
+            <label for="conn-name">Name</label>
+            <input type="text" id="conn-name" required maxlength="64" spellcheck="false" autocapitalize="off" autocomplete="off"
+              pattern="[A-Za-z0-9](?:[A-Za-z0-9._\-]{0,62}[A-Za-z0-9])?"
+              title="Case-sensitive ASCII identifier of up to 64 characters, with alphanumeric ends and alphanumeric, dot, underscore, or hyphen interiors.">
+            <p class="hint">Same local name rule as secrets: case-sensitive ASCII, up to 64 characters, alphanumeric ends, dot, underscore or hyphen inside.</p>
+          </div>
+          <div class="field">
+            <label for="conn-origin">Origin</label>
+            <input type="text" id="conn-origin" required spellcheck="false" autocapitalize="off" autocomplete="off" placeholder="https://api.example.com">
+            <p class="hint">The API's exact HTTPS origin, with no path.</p>
+          </div>
+          <div class="field">
+            <label for="conn-auth">Authentication</label>
+            <select id="conn-auth">
+              <option value="bearer">Bearer</option>
+              <option value="header">Named header</option>
+              <option value="query">Named query parameter</option>
+              <option value="basic">Basic</option>
+            </select>
+          </div>
+          <div class="field" id="conn-secret-field">
+            <label for="conn-secret">Secret reference</label>
+            <input type="text" id="conn-secret" maxlength="64" spellcheck="false" autocapitalize="off" autocomplete="off"
+              pattern="[A-Za-z0-9](?:[A-Za-z0-9._\-]{0,62}[A-Za-z0-9])?"
+              title="The name of a secret already stored in this vault.">
+            <p class="hint">The name of a secret already stored in this vault.</p>
+          </div>
+          <div class="field" id="conn-field-field" hidden>
+            <label for="conn-field">Field name</label>
+            <input type="text" id="conn-field" spellcheck="false" autocapitalize="off" autocomplete="off" placeholder="X-Api-Key">
+            <p class="hint">The header or query parameter name that carries the credential.</p>
+          </div>
+          <div class="row" id="conn-basic-fields" hidden>
+            <div class="field">
+              <label for="conn-username-secret">Username secret</label>
+              <input type="text" id="conn-username-secret" maxlength="64" spellcheck="false" autocapitalize="off" autocomplete="off"
+                pattern="[A-Za-z0-9](?:[A-Za-z0-9._\-]{0,62}[A-Za-z0-9])?">
+            </div>
+            <div class="field">
+              <label for="conn-password-secret">Password secret</label>
+              <input type="text" id="conn-password-secret" maxlength="64" spellcheck="false" autocapitalize="off" autocomplete="off"
+                pattern="[A-Za-z0-9](?:[A-Za-z0-9._\-]{0,62}[A-Za-z0-9])?">
+              <p class="hint">Each reference is optional; at least one is required. Omit a counterpart to send it empty.</p>
+            </div>
+          </div>
+          <div class="check">
+            <input type="checkbox" id="conn-allow-private">
+            <label for="conn-allow-private">Allow private or localhost origin</label>
+          </div>
+          <p class="hint">TLS verification stays on either way.</p>
+              <button type="submit" class="primary">Save connection</button>
+        </form>
+      </details>
+
+      <details id="import-details">
+        <summary>Import JSON</summary>
+        <form id="import-form">
+          <div class="field">
+            <label for="import-name">Name</label>
+            <input type="text" id="import-name" required maxlength="64" spellcheck="false" autocapitalize="off" autocomplete="off"
+              pattern="[A-Za-z0-9](?:[A-Za-z0-9._\-]{0,62}[A-Za-z0-9])?"
+              title="Case-sensitive ASCII identifier of up to 64 characters, with alphanumeric ends and alphanumeric, dot, underscore, or hyphen interiors.">
+          </div>
+          <div class="field">
+            <label for="import-json">Connection definition</label>
+            <textarea id="import-json" required spellcheck="false" autocapitalize="off"></textarea>
+            <p class="hint">A bounded JSON connection definition holding secret references, never credential values.</p>
+          </div>
+          <button type="submit" class="primary">Import</button>
+        </form>
+      </details>
+    </section>
+
+  </div>
+
+  <section id="passwd" hidden>
+    <h2>Change passphrase</h2>
+    <p class="banner" id="banner-passwd" role="alert" hidden></p>
+    <form id="passwd-form">
+      <div class="row">
+        <div class="field">
+          <label for="pass-current">Current passphrase</label>
+          <input type="password" id="pass-current" autocomplete="off" required>
+        </div>
+        <div class="field">
+          <label for="pass-new">New passphrase</label>
+          <input type="password" id="pass-new" autocomplete="off" required>
+        </div>
+        <div class="field">
+          <label for="pass-confirm">Confirm new passphrase</label>
+          <input type="password" id="pass-confirm" autocomplete="off" required>
+        </div>
+      </div>
+      <p class="hint">Stop running sessions first. Backups keep their original passphrase.</p>
+      <button type="submit" class="primary">Change passphrase</button>
+    </form>
+  </section>
+
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  var params = new URLSearchParams(location.search);
+  var token = params.get("t") || "";
+  if (token) {
+    history.replaceState(null, "", location.pathname);
+  }
+
+  function $(id) { return document.getElementById(id); }
+
+  if (!token) {
+    $("no-token").hidden = false;
+    return;
+  }
+  $("app").hidden = false;
+
+  var BANNERS = ["banner-top", "banner-auth", "banner-session", "banner-secrets", "banner-connections", "banner-passwd"];
+
+  var sessionToken = null;
+  var sessionInfo = null;
+  var lastList = { secrets: [], connections: [] };
+  var pendingRemove = null;
+  var focusName = null;
+  var tokenVisible = false;
+  var portSet = false;
+
+  function failure(message, isFatal) {
+    var error = new Error(message);
+    error.fatal = isFatal === true;
+    return error;
+  }
+
+  function setBanner(id, message, tone) {
+    var node = $(id);
+    node.textContent = message;
+    node.className = tone === "ok" ? "banner ok" : "banner";
+    node.hidden = false;
+  }
+
+  function clearBanner(id) {
+    var node = $(id);
+    node.textContent = "";
+    node.className = "banner";
+    node.hidden = true;
+  }
+
+  function showGone() {
+    $("app").hidden = true;
+    $("stopped").hidden = true;
+    $("gone").hidden = false;
+  }
+
+  function showStopped() {
+    $("app").hidden = true;
+    $("stopped").hidden = false;
+  }
+
+  async function api(path, body) {
+    var init = {
+      method: body === undefined ? "GET" : "POST",
+      cache: "no-store",
+      headers: { "authorization": "Bearer " + token }
+    };
+    if (body !== undefined) {
+      init.headers["content-type"] = "application/json";
+      init.body = JSON.stringify(body);
+    }
+    var response;
+    try {
+      response = await fetch(path, init);
+    } catch (networkError) {
+      throw failure("Cannot reach BlindDrop. The helper may have stopped.");
+    }
+    var payload = null;
+    try { payload = await response.json(); } catch (parseError) { payload = null; }
+    if (response.status === 403) {
+      showGone();
+      throw failure("This page is no longer authorized.", true);
+    }
+    if (!response.ok) {
+      var message = payload && payload.error && typeof payload.error.message === "string"
+        ? payload.error.message
+        : "The operation failed.";
+      throw failure(message);
+    }
+    return payload;
+  }
+
+  function act(bannerId, work) {
+    clearBanner(bannerId);
+    return work().catch(function (error) {
+      if (!error.fatal) { setBanner(bannerId, error.message); }
+    });
+  }
+
+  async function refresh() {
+    var state = await api("/api/state");
+    var list = { secrets: [], connections: [] };
+    if (state.unlocked === true) {
+      list = await api("/api/list");
+    }
+    lastList = {
+      secrets: Array.isArray(list.secrets) ? list.secrets : [],
+      connections: Array.isArray(list.connections) ? list.connections : []
+    };
+    render(state);
+  }
+
+  function render(state) {
+    var unlocked = state.unlocked === true;
+    var exists = state.vaultExists === true;
+
+    $("vault-path").textContent = typeof state.vaultPath === "string" ? state.vaultPath : "";
+    $("auth").hidden = unlocked;
+    $("auth-title").textContent = exists ? "Unlock" : "Create vault";
+    $("unlock-form").hidden = !exists || unlocked;
+    $("create-form").hidden = exists || unlocked;
+    $("lock-btn").hidden = !unlocked;
+    $("session").hidden = !unlocked;
+    $("columns").hidden = !unlocked;
+    $("passwd").hidden = !unlocked;
+
+    if (!unlocked) {
+      sessionToken = null;
+      pendingRemove = null;
+    }
+    if (!portSet && typeof state.sessionPort === "number") {
+      $("port").value = String(state.sessionPort);
+      portSet = true;
+    }
+
+    renderSession(state.session);
+    renderSecrets();
+    renderConnections();
+  }
+
+  function localTime(value) {
+    var milliseconds = typeof value === "number" ? value : Number(value);
+    if (!isFinite(milliseconds)) { return ""; }
+    var when = new Date(milliseconds);
+    return isNaN(when.getTime()) ? "" : when.toLocaleTimeString();
+  }
+
+  function renderSession(session) {
+    sessionInfo = session && typeof session === "object" ? session : null;
+    var running = sessionInfo !== null;
+    $("session-form").hidden = running;
+    $("session-running").hidden = !running;
+
+    if (!running) {
+      sessionToken = null;
+      renderAllow();
+      return;
+    }
+
+    var until = localTime(sessionInfo.expiresAt);
+    $("session-until").textContent = until === "" ? "Running" : "Running until " + until;
+
+    var names = sessionInfo.connections && typeof sessionInfo.connections === "object"
+      ? Object.keys(sessionInfo.connections)
+      : [];
+    $("session-connections").textContent = names.length === 0 ? "" : "Allowed: " + names.join(", ");
+    $("session-connections").hidden = names.length === 0;
+
+    var file = sessionInfo.sessionFile;
+    var fileNode = $("session-file-path");
+    if (typeof file === "string" && file !== "") {
+      fileNode.textContent = "Session file: " + file;
+      fileNode.hidden = false;
+    } else if (file === true) {
+      fileNode.textContent = "Session file written for the plugin.";
+      fileNode.hidden = false;
+    } else {
+      fileNode.textContent = "";
+      fileNode.hidden = true;
+    }
+
+    $("mcp-url").value = typeof sessionInfo.mcpUrl === "string" ? sessionInfo.mcpUrl : "";
+
+    var haveToken = typeof sessionToken === "string" && sessionToken !== "";
+    $("token-field").hidden = !haveToken;
+    $("command-field").hidden = !haveToken;
+    $("token-absent").hidden = haveToken;
+    if (haveToken) { paintToken(); }
+  }
+
+  function maskOf(value) {
+    return new Array(Math.min(value.length, 28) + 1).join("•");
+  }
+
+  function commandText(reveal) {
+    var shown = reveal ? sessionToken : maskOf(sessionToken);
+    var url = sessionInfo && typeof sessionInfo.mcpUrl === "string" ? sessionInfo.mcpUrl : "";
+    return 'claude mcp add --transport http blinddrop ' + url + ' --header "Authorization: Bearer ' + shown + '"';
+  }
+
+  function paintToken() {
+    var field = $("session-token");
+    field.type = tokenVisible ? "text" : "password";
+    field.value = sessionToken;
+    $("token-show").textContent = tokenVisible ? "Hide" : "Show";
+    $("token-show").setAttribute("aria-pressed", tokenVisible ? "true" : "false");
+    $("claude-command").textContent = commandText(tokenVisible);
+  }
+
+  function renderAllow() {
+    var host = $("allow-list");
+    var kept = {};
+    Array.prototype.forEach.call(host.querySelectorAll("input[type=checkbox]"), function (box) {
+      if (box.checked) { kept[box.value] = true; }
+    });
+    host.textContent = "";
+    var enabled = lastList.connections.filter(function (item) { return item.enabled === true; });
+    enabled.forEach(function (item, index) {
+      var id = "allow-" + index;
+      var wrap = document.createElement("div");
+      wrap.className = "check";
+      var box = document.createElement("input");
+      box.type = "checkbox";
+      box.id = id;
+      box.value = item.name;
+      box.checked = kept[item.name] === true;
+      var label = document.createElement("label");
+      label.htmlFor = id;
+      label.textContent = item.name;
+      wrap.appendChild(box);
+      wrap.appendChild(label);
+      host.appendChild(wrap);
+    });
+    $("allow-empty").hidden = enabled.length > 0;
+    $("start-btn").disabled = enabled.length === 0;
+  }
+
+  function makeButton(text, className) {
+    var button = document.createElement("button");
+    button.type = "button";
+    button.textContent = text;
+    if (className) { button.className = className; }
+    return button;
+  }
+
+  function makeTag(enabled) {
+    var tag = document.createElement("span");
+    tag.className = enabled ? "tag on" : "tag";
+    tag.textContent = enabled ? "enabled" : "disabled";
+    return tag;
+  }
+
+  function renderSecrets() {
+    var host = $("secret-list");
+    host.textContent = "";
+    $("secret-empty").hidden = lastList.secrets.length > 0;
+
+    lastList.secrets.forEach(function (secret) {
+      var row = document.createElement("li");
+      row.className = "item";
+      var actions = document.createElement("span");
+      actions.className = "item-actions";
+
+      if (pendingRemove === secret.name) {
+        var question = document.createElement("span");
+        question.className = "item-name";
+        question.textContent = "Remove " + secret.name + "?";
+        row.appendChild(question);
+
+        var confirmButton = makeButton("Remove", "danger");
+        if (focusName === secret.name) { confirmButton.setAttribute("data-focus", "1"); }
+        confirmButton.addEventListener("click", function () {
+          pendingRemove = null;
+          act("banner-secrets", async function () {
+            await api("/api/secret/remove", { name: secret.name });
+            await refresh();
+          });
+        });
+        var cancelButton = makeButton("Cancel");
+        cancelButton.addEventListener("click", function () {
+          pendingRemove = null;
+          focusName = secret.name;
+          renderSecrets();
+        });
+        actions.appendChild(confirmButton);
+        actions.appendChild(cancelButton);
+      } else {
+        var name = document.createElement("span");
+        name.className = "item-name";
+        name.textContent = secret.name;
+        row.appendChild(name);
+        row.appendChild(makeTag(secret.enabled === true));
+
+        var disableButton = makeButton("Disable");
+        disableButton.disabled = secret.enabled !== true;
+        disableButton.addEventListener("click", function () {
+          act("banner-secrets", async function () {
+            await api("/api/secret/disable", { name: secret.name });
+            await refresh();
+          });
+        });
+        var removeButton = makeButton("Remove");
+        if (focusName === secret.name) { removeButton.setAttribute("data-focus", "1"); }
+        removeButton.addEventListener("click", function () {
+          clearBanner("banner-secrets");
+          pendingRemove = secret.name;
+          focusName = secret.name;
+          renderSecrets();
+        });
+        actions.appendChild(disableButton);
+        actions.appendChild(removeButton);
+      }
+
+      row.appendChild(actions);
+      host.appendChild(row);
+    });
+
+    var target = host.querySelector("[data-focus]");
+    if (target) { target.focus(); }
+    focusName = null;
+  }
+
+  function renderConnections() {
+    var host = $("connection-list");
+    host.textContent = "";
+    $("connection-empty").hidden = lastList.connections.length > 0;
+
+    lastList.connections.forEach(function (connection) {
+      var row = document.createElement("li");
+      row.className = "item";
+
+      var name = document.createElement("span");
+      name.className = "item-name";
+      name.textContent = connection.name;
+      row.appendChild(name);
+      row.appendChild(makeTag(connection.enabled === true));
+
+      var actions = document.createElement("span");
+      actions.className = "item-actions";
+      var disableButton = makeButton("Disable");
+      disableButton.disabled = connection.enabled !== true;
+      disableButton.addEventListener("click", function () {
+        act("banner-connections", async function () {
+          await api("/api/connection/disable", { name: connection.name });
+          await refresh();
+        });
+      });
+      actions.appendChild(disableButton);
+      row.appendChild(actions);
+
+      var meta = document.createElement("p");
+      meta.className = "item-meta";
+      var parts = [connection.origin, connection.authType];
+      if (connection.allowPrivate === true) { parts.push("private allowed"); }
+      meta.textContent = parts.join("  ·  ");
+      row.appendChild(meta);
+
+      host.appendChild(row);
+    });
+  }
+
+  function flash(button) {
+    var original = button.getAttribute("data-label");
+    if (original === null) {
+      original = button.textContent;
+      button.setAttribute("data-label", original);
+    }
+    button.textContent = "Copied";
+    $("live").textContent = "Copied";
+    window.setTimeout(function () {
+      button.textContent = button.getAttribute("data-label") || "Copy";
+      button.removeAttribute("data-label");
+      if ($("live").textContent === "Copied") { $("live").textContent = ""; }
+    }, 2000);
+  }
+
+  function wireCopy(button, read) {
+    button.addEventListener("click", function () {
+      var text = read();
+      if (typeof text !== "string" || text === "") { return; }
+      clearBanner("banner-session");
+      navigator.clipboard.writeText(text).then(
+        function () { flash(button); },
+        function () { setBanner("banner-session", "The browser refused clipboard access. Select the text and copy it."); }
+      );
+    });
+  }
+
+  wireCopy($("copy-url"), function () { return $("mcp-url").value; });
+  wireCopy($("copy-token"), function () { return sessionToken || ""; });
+  wireCopy($("copy-command"), function () { return sessionToken ? commandText(true) : ""; });
+
+  $("token-show").addEventListener("click", function () {
+    tokenVisible = !tokenVisible;
+    paintToken();
+  });
+
+  $("secret-value-show").addEventListener("click", function () {
+    var field = $("secret-value");
+    var reveal = field.type === "password";
+    field.type = reveal ? "text" : "password";
+    this.textContent = reveal ? "Hide" : "Show";
+    this.setAttribute("aria-pressed", reveal ? "true" : "false");
+  });
+
+  function hideSecretValue() {
+    $("secret-value").type = "password";
+    $("secret-value-show").textContent = "Show";
+    $("secret-value-show").setAttribute("aria-pressed", "false");
+  }
+
+  $("unlock-form").addEventListener("submit", function (event) {
+    event.preventDefault();
+    var passphrase = $("unlock-pass").value;
+    $("unlock-pass").value = "";
+    act("banner-auth", async function () {
+      await api("/api/unlock", { passphrase: passphrase });
+      await refresh();
+    });
+  });
+
+  $("create-form").addEventListener("submit", function (event) {
+    event.preventDefault();
+    var passphrase = $("create-pass").value;
+    var confirmation = $("create-confirm").value;
+    $("create-pass").value = "";
+    $("create-confirm").value = "";
+    clearBanner("banner-auth");
+    if (passphrase !== confirmation) {
+      setBanner("banner-auth", "The two passphrases do not match. Enter them again.");
+      return;
+    }
+    act("banner-auth", async function () {
+      await api("/api/init", { passphrase: passphrase });
+      await refresh();
+    });
+  });
+
+  $("lock-btn").addEventListener("click", function () {
+    act("banner-top", async function () {
+      await api("/api/lock", {});
+      sessionToken = null;
+      await refresh();
+    });
+  });
+
+  $("quit-btn").addEventListener("click", function () {
+    clearBanner("banner-top");
+    api("/api/shutdown", {}).then(
+      function () { showStopped(); },
+      function (error) { if (!error.fatal) { setBanner("banner-top", error.message); } }
+    );
+  });
+
+  $("session-form").addEventListener("submit", function (event) {
+    event.preventDefault();
+    clearBanner("banner-session");
+    var allow = [];
+    Array.prototype.forEach.call($("allow-list").querySelectorAll("input[type=checkbox]"), function (box) {
+      if (box.checked) { allow.push(box.value); }
+    });
+    if (allow.length === 0) {
+      setBanner("banner-session", "Choose at least one connection to allow.");
+      return;
+    }
+    var request = {
+      allow: allow,
+      ttl: Number($("ttl").value),
+      port: Number($("port").value),
+      sessionFile: $("session-file").checked
+    };
+    act("banner-session", async function () {
+      var started = await api("/api/session/start", request);
+      sessionToken = started && typeof started.token === "string" ? started.token : null;
+      tokenVisible = false;
+      await refresh();
+    });
+  });
+
+  $("stop-btn").addEventListener("click", function () {
+    act("banner-session", async function () {
+      await api("/api/session/stop", {});
+      sessionToken = null;
+      await refresh();
+    });
+  });
+
+  $("secret-form").addEventListener("submit", function (event) {
+    event.preventDefault();
+    var name = $("secret-name").value.trim();
+    var value = $("secret-value").value;
+    $("secret-name").value = "";
+    $("secret-value").value = "";
+    hideSecretValue();
+    act("banner-secrets", async function () {
+      await api("/api/secret/set", { name: name, value: value });
+      $("secret-details").open = false;
+      await refresh();
+    });
+  });
+
+  function authType() { return $("conn-auth").value; }
+
+  function paintAuthFields() {
+    var type = authType();
+    var needsSecret = type !== "basic";
+    var needsField = type === "header" || type === "query";
+    $("conn-secret-field").hidden = !needsSecret;
+    $("conn-secret").required = needsSecret;
+    $("conn-field-field").hidden = !needsField;
+    $("conn-field").required = needsField;
+    $("conn-basic-fields").hidden = type !== "basic";
+    $("conn-field").placeholder = type === "query" ? "api_key" : "X-Api-Key";
+  }
+
+  $("conn-auth").addEventListener("change", paintAuthFields);
+  paintAuthFields();
+
+  $("connection-form").addEventListener("submit", function (event) {
+    event.preventDefault();
+    clearBanner("banner-connections");
+    var type = authType();
+    var request = {
+      name: $("conn-name").value.trim(),
+      origin: $("conn-origin").value.trim(),
+      auth: type,
+      allowPrivate: $("conn-allow-private").checked
+    };
+    if (type === "basic") {
+      var username = $("conn-username-secret").value.trim();
+      var password = $("conn-password-secret").value.trim();
+      if (username === "" && password === "") {
+        setBanner("banner-connections", "Basic authentication needs a username secret, a password secret, or both.");
+        return;
+      }
+      if (username !== "") { request.usernameSecret = username; }
+      if (password !== "") { request.passwordSecret = password; }
+    } else {
+      request.secret = $("conn-secret").value.trim();
+      if (type === "header" || type === "query") {
+        request.field = $("conn-field").value.trim();
+      }
+    }
+    act("banner-connections", async function () {
+      await api("/api/connection/set", request);
+      $("connection-form").reset();
+      paintAuthFields();
+      $("connection-details").open = false;
+      await refresh();
+    });
+  });
+
+  $("import-form").addEventListener("submit", function (event) {
+    event.preventDefault();
+    clearBanner("banner-connections");
+    var name = $("import-name").value.trim();
+    var definition;
+    try {
+      definition = JSON.parse($("import-json").value);
+    } catch (parseError) {
+      setBanner("banner-connections", "That is not valid JSON: " + parseError.message);
+      return;
+    }
+    act("banner-connections", async function () {
+      await api("/api/connection/import", { name: name, definition: definition });
+      $("import-form").reset();
+      $("import-details").open = false;
+      await refresh();
+    });
+  });
+
+  $("passwd-form").addEventListener("submit", function (event) {
+    event.preventDefault();
+    var current = $("pass-current").value;
+    var next = $("pass-new").value;
+    var confirmation = $("pass-confirm").value;
+    $("pass-current").value = "";
+    $("pass-new").value = "";
+    $("pass-confirm").value = "";
+    clearBanner("banner-passwd");
+    if (next !== confirmation) {
+      setBanner("banner-passwd", "The two new passphrases do not match. Enter them again.");
+      return;
+    }
+    act("banner-passwd", async function () {
+      await api("/api/passwd", { currentPassphrase: current, newPassphrase: next });
+      await refresh();
+      setBanner("banner-passwd", "Passphrase changed. Existing backups keep their original passphrase.", "ok");
+    });
+  });
+
+  BANNERS.forEach(clearBanner);
+  refresh().catch(function (error) {
+    if (!error.fatal) { setBanner("banner-top", error.message); }
+  });
+})();
+</script>
+</body>
+</html>

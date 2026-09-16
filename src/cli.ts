@@ -11,10 +11,20 @@ import {
   createVault,
   defaultVaultPath,
   loadVault,
-  saveVault,
   validateConnection,
   validateName
 } from "./vault.js";
+import {
+  changePassphrase,
+  disableConnection,
+  disableSecret,
+  importConnection,
+  listMetadata,
+  removeSecret,
+  setConnection,
+  setSecret,
+  type ConnectionSetOptions
+} from "./vault-admin.js";
 import { BlindDropError, publicError } from "./errors.js";
 import { startHttpSession, type HttpSession } from "./http.js";
 import { readOwnerInput } from "./input.js";
@@ -24,9 +34,10 @@ import {
   openSystemBrowser,
   readOAuthLoginDefinition,
 } from "./oauth-login.js";
-import { connectionSecretNames } from "./references.js";
+import { deleteSessionFile, writeSessionFile } from "./session-file.js";
 import { createBrokerSession, type BrokerSession } from "./session.js";
-import type { Authentication, Connection, VaultData } from "./types.js";
+import type { Connection } from "./types.js";
+import { startOwnerUi } from "./ui.js";
 
 const MAX_CONNECTION_DEFINITION_BYTES = 64 * 1024;
 const ENVIRONMENT_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/u;
@@ -35,16 +46,6 @@ const CHILD_SHUTDOWN_MS = 5_000;
 interface GlobalOptions {
   vault: string;
   passwordFd?: string;
-}
-
-interface ConnectionSetOptions {
-  origin: string;
-  auth: string;
-  secret?: string;
-  usernameSecret?: string;
-  passwordSecret?: string;
-  field?: string;
-  allowPrivate?: boolean;
 }
 
 interface RunOptions {
@@ -56,67 +57,6 @@ interface RunOptions {
 interface ChildExit {
   code: number | null;
   signal: NodeJS.Signals | null;
-}
-
-function connectionUsesSecret(connection: Connection, name: string): boolean {
-  return connectionSecretNames(connection).includes(name);
-}
-
-function requireAvailableSecret(vault: VaultData, name: string | undefined): string {
-  if (name === undefined) {
-    throw new BlindDropError("INVALID_INPUT");
-  }
-  validateName(name);
-  const secret = Object.hasOwn(vault.secrets, name) ? vault.secrets[name] : undefined;
-  if (secret === undefined || !secret.enabled) {
-    throw new BlindDropError("SECRET_NOT_FOUND");
-  }
-  return name;
-}
-
-function parseConnection(vault: VaultData, options: ConnectionSetOptions): Connection {
-  let auth: Authentication;
-
-  if (options.auth === "basic") {
-    if (options.secret !== undefined || options.field !== undefined) {
-      throw new BlindDropError("INVALID_INPUT");
-    }
-    auth = {
-      type: "basic",
-      ...(options.usernameSecret === undefined ? {} : {
-        usernameSecret: requireAvailableSecret(vault, options.usernameSecret)
-      }),
-      ...(options.passwordSecret === undefined ? {} : {
-        passwordSecret: requireAvailableSecret(vault, options.passwordSecret)
-      })
-    };
-  } else {
-    if (options.usernameSecret !== undefined || options.passwordSecret !== undefined) {
-      throw new BlindDropError("INVALID_INPUT");
-    }
-    const secret = requireAvailableSecret(vault, options.secret);
-
-    if (options.auth === "bearer") {
-      if (options.field !== undefined) {
-        throw new BlindDropError("INVALID_INPUT");
-      }
-      auth = { type: "bearer", secret };
-    } else if (options.auth === "header" || options.auth === "query") {
-      if (options.field === undefined) {
-        throw new BlindDropError("INVALID_INPUT");
-      }
-      auth = { type: options.auth, secret, name: options.field };
-    } else {
-      throw new BlindDropError("INVALID_INPUT");
-    }
-  }
-
-  return validateConnection({
-    origin: options.origin,
-    auth,
-    allowPrivate: options.allowPrivate === true,
-    enabled: true
-  });
 }
 
 function readConnectionDefinition(path: string): Connection {
@@ -168,12 +108,6 @@ function readConnectionDefinition(path: string): Connection {
     throw new BlindDropError("INVALID_INPUT");
   }
   return validateConnection(decoded);
-}
-
-function requireConnectionSecrets(vault: VaultData, connection: Connection): void {
-  for (const secretName of connectionSecretNames(connection)) {
-    requireAvailableSecret(vault, secretName);
-  }
 }
 
 function parseTtl(value: string): number {
@@ -341,7 +275,7 @@ async function main(): Promise<void> {
   program
     .name("blinddrop")
     .description("Local encrypted credentials for authorized agent HTTP requests")
-    .version("0.3.0")
+    .version("0.4.0")
     .option("--vault <path>", "encrypted vault archive path", defaultVaultPath())
     .option("--password-fd <fd>", "read the vault passphrase from an inherited descriptor")
     .showSuggestionAfterError(false)
@@ -376,7 +310,6 @@ async function main(): Promise<void> {
     .option("--new-password-fd <fd>", "read the new vault passphrase from an inherited descriptor")
     .action(async (options: { newPasswordFd?: string }) => {
       const currentPassphrase = await readPassphrase();
-      const vault = loadVault(globalOptions().vault, currentPassphrase);
       const newPassphrase = await readOwnerInput({
         fd: options.newPasswordFd,
         message: "New vault passphrase:",
@@ -384,7 +317,7 @@ async function main(): Promise<void> {
           ? "Confirm new vault passphrase:"
           : undefined,
       });
-      saveVault(globalOptions().vault, vault, newPassphrase);
+      changePassphrase(globalOptions().vault, currentPassphrase, newPassphrase);
       writeLine("Vault passphrase changed.");
     });
 
@@ -401,9 +334,7 @@ async function main(): Promise<void> {
         fd: options.secretFd,
         message: "Secret value:"
       });
-      const vault = loadVault(globalOptions().vault, passphrase);
-      vault.secrets[name] = { value, enabled: true };
-      saveVault(globalOptions().vault, vault, passphrase);
+      setSecret(globalOptions().vault, passphrase, name, value);
       writeLine("Secret saved for the next session.");
     });
 
@@ -414,12 +345,7 @@ async function main(): Promise<void> {
     .action(async (name: string) => {
       validateName(name);
       const passphrase = await readPassphrase();
-      const vault = loadVault(globalOptions().vault, passphrase);
-      if (!Object.hasOwn(vault.secrets, name)) {
-        throw new BlindDropError("SECRET_NOT_FOUND");
-      }
-      vault.secrets[name].enabled = false;
-      saveVault(globalOptions().vault, vault, passphrase);
+      disableSecret(globalOptions().vault, passphrase, name);
       writeLine("Secret disabled for the next session. Stop any active session to revoke it.");
     });
 
@@ -430,15 +356,7 @@ async function main(): Promise<void> {
     .action(async (name: string) => {
       validateName(name);
       const passphrase = await readPassphrase();
-      const vault = loadVault(globalOptions().vault, passphrase);
-      if (!Object.hasOwn(vault.secrets, name)) {
-        throw new BlindDropError("SECRET_NOT_FOUND");
-      }
-      if (Object.values(vault.connections).some((connection) => connectionUsesSecret(connection, name))) {
-        throw new BlindDropError("INVALID_INPUT");
-      }
-      delete vault.secrets[name];
-      saveVault(globalOptions().vault, vault, passphrase);
+      removeSecret(globalOptions().vault, passphrase, name);
       writeLine("Secret removed from the next session snapshot.");
     });
 
@@ -457,9 +375,7 @@ async function main(): Promise<void> {
     .action(async (name: string, options: ConnectionSetOptions) => {
       validateName(name);
       const passphrase = await readPassphrase();
-      const vault = loadVault(globalOptions().vault, passphrase);
-      vault.connections[name] = parseConnection(vault, options);
-      saveVault(globalOptions().vault, vault, passphrase);
+      setConnection(globalOptions().vault, passphrase, name, options);
       writeLine("Connection saved and enabled for the next session.");
     });
 
@@ -472,10 +388,7 @@ async function main(): Promise<void> {
       validateName(name);
       const imported = readConnectionDefinition(file);
       const passphrase = await readPassphrase();
-      const vault = loadVault(globalOptions().vault, passphrase);
-      requireConnectionSecrets(vault, imported);
-      vault.connections[name] = imported;
-      saveVault(globalOptions().vault, vault, passphrase);
+      importConnection(globalOptions().vault, passphrase, name, imported);
       writeLine("Connection imported for the next session.");
     });
 
@@ -486,12 +399,7 @@ async function main(): Promise<void> {
     .action(async (name: string) => {
       validateName(name);
       const passphrase = await readPassphrase();
-      const vault = loadVault(globalOptions().vault, passphrase);
-      if (!Object.hasOwn(vault.connections, name)) {
-        throw new BlindDropError("CONNECTION_NOT_FOUND");
-      }
-      vault.connections[name].enabled = false;
-      saveVault(globalOptions().vault, vault, passphrase);
+      disableConnection(globalOptions().vault, passphrase, name);
       writeLine("Connection disabled for the next session. Stop any active session to revoke it.");
     });
 
@@ -534,21 +442,7 @@ async function main(): Promise<void> {
     .action(async () => {
       const passphrase = await readPassphrase();
       const vault = loadVault(globalOptions().vault, passphrase);
-      const metadata = {
-        secrets: Object.entries(vault.secrets)
-          .sort(([left], [right]) => left.localeCompare(right))
-          .map(([name, item]) => ({ name, enabled: item.enabled })),
-        connections: Object.entries(vault.connections)
-          .sort(([left], [right]) => left.localeCompare(right))
-          .map(([name, item]) => ({
-            name,
-            origin: item.origin,
-            authType: item.auth.type,
-            allowPrivate: item.allowPrivate,
-            enabled: item.enabled
-          }))
-      };
-      writeLine(JSON.stringify(metadata, null, 2));
+      writeLine(JSON.stringify(listMetadata(vault), null, 2));
     });
 
   program
@@ -558,13 +452,20 @@ async function main(): Promise<void> {
     .option("--http", "serve MCP and SDK requests on an authenticated loopback endpoint")
     .option("--port <port>", "loopback port for HTTP mode", "0")
     .option("--ttl <seconds>", "session lifetime in seconds (maximum 86400)", "3600")
-    .action(async (options: { allow: string[]; http?: boolean; port: string; ttl: string }) => {
+    .option("--session-file <path>", "publish this HTTP session's local endpoint and token to a 0600 file")
+    .action(async (options: {
+      allow: string[];
+      http?: boolean;
+      port: string;
+      ttl: string;
+      sessionFile?: string;
+    }) => {
       if (options.allow.length === 0) {
         throw new BlindDropError("INVALID_INPUT");
       }
       const ttl = parseTtl(options.ttl);
       const port = parsePort(options.port);
-      if (options.http !== true && port !== 0) {
+      if (options.http !== true && (port !== 0 || options.sessionFile !== undefined)) {
         throw new BlindDropError("INVALID_INPUT");
       }
       const passphrase = await readPassphrase();
@@ -581,6 +482,16 @@ async function main(): Promise<void> {
       process.once("SIGINT", stop);
       process.once("SIGTERM", stop);
       try {
+        // Publish the session file before the readiness line, so a reader that
+        // acts on readiness finds the file already in place.
+        if (options.sessionFile !== undefined) {
+          writeSessionFile(options.sessionFile, {
+            mcpUrl: http.mcpUrl,
+            token: http.token,
+            expiresAt: http.expiresAt,
+            connections: http.connections,
+          });
+        }
         writeLine(JSON.stringify({
           mcpUrl: http.mcpUrl,
           connections: http.connections,
@@ -592,6 +503,40 @@ async function main(): Promise<void> {
         process.removeListener("SIGINT", stop);
         process.removeListener("SIGTERM", stop);
         await http.close();
+        if (options.sessionFile !== undefined) {
+          deleteSessionFile(options.sessionFile);
+        }
+      }
+    });
+
+  program
+    .command("ui")
+    .description("serve the owner UI on an authenticated loopback endpoint")
+    .option("--port <port>", "loopback port for the owner UI", "0")
+    .option("--no-browser", "print the owner UI address instead of opening the system browser")
+    .action(async (options: { port: string; browser: boolean }) => {
+      const port = parsePort(options.port);
+      const ui = await startOwnerUi({ vaultPath: globalOptions().vault, port });
+      const stop = () => {
+        void ui.close();
+      };
+      process.once("SIGINT", stop);
+      process.once("SIGTERM", stop);
+      try {
+        // The owner's own terminal is the only place this token is printed.
+        writeLine(JSON.stringify({
+          url: ui.url,
+          token: ui.token,
+          port: Number(new URL(ui.url).port),
+        }));
+        if (options.browser) {
+          await openSystemBrowser(ui.launchUrl, new AbortController().signal);
+        }
+        await ui.closed;
+      } finally {
+        process.removeListener("SIGINT", stop);
+        process.removeListener("SIGTERM", stop);
+        await ui.close();
       }
     });
 

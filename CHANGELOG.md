@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.4.0] - unreleased
+
+- Owner GUI: `blinddrop ui` serves an owner-only page on an authenticated loopback listener to create or unlock the vault, manage secrets and connections, change the passphrase, and start or stop agent sessions; the passphrase is held in that process's memory only.
+- macOS app under `desktop/`: hosts the same server and page in an Electron window; quitting the app ends every session. Unsigned local build.
+- Claude Code plugin under `plugin/`: a portable skill, a `PreToolUse` guard that refuses direct reads of `.env`, key files and the vault directory with a reason naming the BlindDrop tool, and MCP wiring that attaches automatically through an opt-in session file. The skill folder also installs into Codex and Cursor.
+- `serve --http --session-file PATH` writes the session record at mode 0600 and deletes it on exit.
+- Every static error code now maps through one status table shared by both listeners. Codes that previously fell through to 502 on the agent session listener return their own status: `STORAGE_ERROR` 500, `SECRET_NOT_FOUND` and `CONNECTION_NOT_FOUND` 404, `UNLOCK_FAILED` 401. A local port that cannot be bound reports the new `PORT_UNAVAILABLE` code instead of `INPUT_UNAVAILABLE`.
+
+Verification: recorded in the 0.4 verification record before release.
+
 ## [0.3.0] - 2026-09-11
 
 Initial public release.

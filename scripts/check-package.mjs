@@ -34,11 +34,16 @@ const requiredPackagePaths = [
   "examples/request.mjs",
   "LICENSE",
   "THIRD-PARTY-NOTICES.md",
+  "ui/index.html",
+  "plugin/skills/blinddrop/SKILL.md",
+  "plugin/.mcp.json",
   "dist/cli.js",
   "dist/oauth-login.js",
   "dist/http.js",
   "dist/session.js",
   "dist/stream.js",
+  "dist/ui.js",
+  "dist/vault-admin.js",
 ];
 
 function collect(stream) {

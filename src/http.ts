@@ -5,8 +5,38 @@ import { createMcpHandler } from "@modelcontextprotocol/server";
 import { toNodeHandler } from "@modelcontextprotocol/node";
 
 import { Broker, DEFAULT_LIMITS, STREAM_LIMITS } from "./broker.js";
-import { BlindDropError, publicError } from "./errors.js";
+import { BlindDropError, publicError, type ErrorCode } from "./errors.js";
 import { createMcpServer, MAX_MCP_MESSAGE_BYTES } from "./mcp.js";
+
+/** The one status mapping for every static error code both listeners return. */
+const ERROR_STATUS: Record<ErrorCode, number> = {
+  INVALID_INPUT: 400,
+  VAULT_EXISTS: 409,
+  VAULT_NOT_FOUND: 404,
+  VAULT_INVALID: 502,
+  UNLOCK_FAILED: 401,
+  SECRET_NOT_FOUND: 404,
+  CONNECTION_NOT_FOUND: 404,
+  ACCESS_DENIED: 403,
+  SESSION_EXPIRED: 410,
+  SESSION_CLOSED: 410,
+  DESTINATION_DENIED: 403,
+  RESPONSE_BLOCKED: 502,
+  RESPONSE_TOO_LARGE: 502,
+  REQUEST_TOO_LARGE: 413,
+  UNSUPPORTED_RESPONSE: 502,
+  TIMEOUT: 504,
+  UPSTREAM_ERROR: 502,
+  BUSY: 429,
+  PORT_UNAVAILABLE: 409,
+  STORAGE_ERROR: 500,
+  INPUT_UNAVAILABLE: 500,
+  INTERNAL_ERROR: 502
+};
+
+export function errorStatus(code: ErrorCode): number {
+  return ERROR_STATUS[code];
+}
 
 export interface HttpSession {
   token: string;
@@ -84,15 +114,7 @@ function sendError(response: ServerResponse, error: unknown): void {
     return;
   }
   const safe = publicError(error);
-  const code = safe.code;
-  const status = code === "ACCESS_DENIED" || code === "DESTINATION_DENIED" ? 403
-    : code === "INVALID_INPUT" ? 400
-    : code === "REQUEST_TOO_LARGE" ? 413
-    : code === "BUSY" ? 429
-    : code === "TIMEOUT" ? 504
-    : code === "SESSION_CLOSED" || code === "SESSION_EXPIRED" ? 410
-    : 502;
-  response.writeHead(status, {
+  response.writeHead(errorStatus(safe.code), {
     "content-type": "application/json",
     "cache-control": "no-store",
     "connection": "close"
@@ -238,7 +260,7 @@ export async function startHttpSession(
 
   try {
     await new Promise<void>((resolve, reject) => {
-      const onError = () => reject(new BlindDropError("INPUT_UNAVAILABLE"));
+      const onError = () => reject(new BlindDropError("PORT_UNAVAILABLE"));
       server.once("error", onError);
       server.listen(port, "127.0.0.1", () => {
         server.off("error", onError);

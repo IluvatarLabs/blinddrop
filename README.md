@@ -30,15 +30,16 @@ in the vault. There is no subscription or hosted account to maintain.
 
 ## Install
 
-Requirements: Node.js 22.13+ on the 22.x line, or 23.5+, and npm. Version 0.3.0
-has been tested on macOS and Linux. Windows is not verified.
+Requirements: Node.js 22.13+ on the 22.x line, or 23.5+, and npm. Version 0.4.0
+has been tested on macOS; the runtime it extends was tested on Linux in 0.3.0.
+Windows is not verified.
 
 From this source checkout:
 
 ```sh
 npm ci
 npm pack
-npm install --global --prefix "$HOME/.local" ./blinddrop-0.3.0.tgz
+npm install --global --prefix "$HOME/.local" ./blinddrop-0.4.0.tgz
 export PATH="$HOME/.local/bin:$PATH"
 blinddrop --help
 ```
@@ -82,6 +83,14 @@ For another API, use its HTTPS origin and authentication format. See the
 
 ## Running it
 
+- `blinddrop ui` opens an owner page in your browser to create or unlock the
+  vault, manage keys and connections, and start an agent session. The macOS app
+  in `desktop/` shows the same page in a window and ends every session when you
+  quit it. See the [configuration reference](CONFIGURATION.md#owner-gui).
+- The [BlindDrop plugin](plugin/README.md) for Claude Code adds a skill that
+  steers the agent to the vault, a hook that refuses direct reads of `.env` and
+  key files, and automatic attachment to a running session. The same skill
+  folder installs into Codex and Cursor.
 - `blinddrop run CONNECTION -- COMMAND ARGS…` runs a command with a local API
   endpoint and a temporary session token. Existing SDKs can use it if they let
   you configure their base URL and authentication header. Streaming is supported.
@@ -111,6 +120,10 @@ By default, BlindDrop keeps two files:
 └── vault.enc.events.jsonl  request outcomes, without keys or request bodies
 ```
 
+While a session started from the owner page or the app is running with the
+session-file option on, a third file, `session.json`, holds that session's
+local URL and token at mode 0600 and is removed when the session ends.
+
 Back up `vault.enc`. Its passphrase is required to restore it; there is no
 recovery bypass. Stop active helpers before replacing keys or changing the
 passphrase. `blinddrop passwd` re-encrypts the current vault; older backups
@@ -130,6 +143,8 @@ prevent an agent from misusing an action its key permits. See the
 ## Documentation
 
 - [Client guide](CLIENTS.md) — connect MCP hosts, SDKs, and HTTP clients
+- [Plugin](plugin/README.md) — Claude Code plugin and the portable skill for Codex and Cursor
+- [macOS app](desktop/README.md) — build the app that hosts the owner page
 - [Configuration](CONFIGURATION.md) — authentication, connections, backup, and limits
 - [Fly.io](FLY.md) — set up and use a Fly connection
 - [OAuth](OAUTH.md) — browser consent and saved refresh grants

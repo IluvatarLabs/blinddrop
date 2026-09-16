@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "blinddrop": {
+      "type": "http",
+      "url": "${BLINDDROP_MCP_URL:-http://127.0.0.1:8787/mcp}",
+      "headersHelper": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/session-headers.mjs\""
+    }
+  }
+}

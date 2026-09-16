@@ -91,6 +91,14 @@ For mutual TLS, add a top-level `tls` object to the connection:
 
 An encrypted private key can add `passphraseSecret`. Store PEM contents using the normal protected owner input; a trusted launcher can supply a multiline value through the inherited secret descriptor. TLS composes with the selected HTTP authentication. BlindDrop uses Node's certificate validation and does not install a MITM CA.
 
+## Owner GUI
+
+`blinddrop ui` starts an owner-only page on a loopback port and opens it in your default browser; `--no-browser` prints the URL instead and `--port` fixes the port. The page manages the same archive as the commands above: create or unlock the vault, add or disable secrets and connections, import a compound definition, change the passphrase, and start or stop an agent session with chosen connections, a lifetime and a port. The page's URL carries a one-time owner token; every request needs it, the listener accepts only its own origin, and the token is never given to an agent. The passphrase you type is held in the `ui` process's memory only, as `serve` holds it. Quit from the page or press Ctrl-C in the terminal to stop; closing the tab alone leaves the process running.
+
+A session started from the page defaults to port 8787 and, unless you untick the option, writes `~/.config/blinddrop/session.json` at mode 0600 with the MCP URL, session token, expiry and connection base URLs. The BlindDrop Claude Code plugin reads that file to connect automatically; the file is deleted when the session ends. The CLI writes the same file only with `serve --http --session-file PATH`.
+
+The macOS app in `desktop/` hosts the same server and page in its own window; quitting the app ends every session. Linux and Windows use the browser page.
+
 ## Agent session
 
 Configure a terminal-launched stdio MCP client to use the installed executable. Replace the example path with the result of `command -v blinddrop`:
@@ -110,7 +118,7 @@ Configure a terminal-launched stdio MCP client to use the installed executable. 
 
 With a terminal-launched client, the helper prompts the owner on the controlling terminal, keeping MCP stdin/stdout for protocol messages. Unlock once per helper session. Repeat `--allow` for more connections; no wildcard grant is provided. The default lifetime is one hour, with a range of 1–86400 seconds. The helper exits on expiry, client input closure, SIGINT, or SIGTERM.
 
-A headless host without a controlling terminal must supply owner input through inherited descriptors. Global `--password-fd 3` reads the passphrase from descriptor 3; `secret set ... --secret-fd 4` can similarly read a value. The trusted launcher must create and pass those descriptors: adding their numbers to MCP JSON alone does not create the input. Input is bounded UTF-8, read to EOF, with one trailing newline removed; descriptors close after use. No passphrase environment variable or plaintext cache is provided. Alternatively, start `serve --http` in your terminal and attach the headless host using the temporary session token ([HTTP setup](CLIENTS.md#attach-an-independently-launched-mcp-host)). No GUI unlock dialog is supplied.
+A headless host without a controlling terminal must supply owner input through inherited descriptors. Global `--password-fd 3` reads the passphrase from descriptor 3; `secret set ... --secret-fd 4` can similarly read a value. The trusted launcher must create and pass those descriptors: adding their numbers to MCP JSON alone does not create the input. Input is bounded UTF-8, read to EOF, with one trailing newline removed; descriptors close after use. No passphrase environment variable or plaintext cache is provided. Alternatively, start `serve --http` in your terminal and attach the headless host using the temporary session token ([HTTP setup](CLIENTS.md#attach-an-independently-launched-mcp-host)). The owner GUI is an owner-side page, not a host unlock dialog: use it to start a session and copy the URL and token for a headless host, or leave the session file on so the Claude Code plugin attaches automatically.
 
 The server exposes exactly two tools: `list_connections` for permitted metadata and `execute_http` for requests. Example request:
 

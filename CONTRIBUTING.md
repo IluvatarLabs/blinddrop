@@ -29,7 +29,7 @@ used by the disposable HTTPS receivers.
 npm run check
 npm test
 npm pack
-npm run check:package -- ./blinddrop-0.3.0.tgz
+npm run check:package -- ./blinddrop-0.4.0.tgz
 ```
 
 The test suite runs the real CLI, MCP helper and official SDK clients against
@@ -37,8 +37,9 @@ disposable local HTTPS receivers with dummy credentials. The package check
 installs the freshly packed tarball into a disposable directory and exercises
 its owner CLI, passphrase change, MCP HTTP and streamed SDK workflows without
 touching your normal installation. Inspect the tarball contents: it may contain
-only `dist/`, `examples/`, the guides listed in `package.json`, the license and
-the third-party notices.
+only `dist/`, `ui/`, `plugin/`, `examples/`, the guides listed in `package.json`,
+the license and the third-party notices. The macOS app under `desktop/` has its
+own manifest and build steps in its README; it is not part of the npm package.
 
 Three explicit checks contact external services or an installed agent host and
 are separate from the offline suite: `node scripts/check-postman.mjs`,

@@ -174,6 +174,10 @@ unlock in the terminal. It does not provide a GUI or claim every GUI host
 has been tested. Browser JavaScript requests carrying `Origin` are rejected;
 this endpoint is for local clients, not a webpage API.
 
+## Claude Code plugin
+
+Install the plugin from the `plugin/` directory: `claude --plugin-dir /path/to/plugin` for a local checkout, or add the repository as a marketplace as the [plugin README](plugin/README.md) describes. It registers the BlindDrop MCP server at `http://127.0.0.1:8787/mcp` with a headers helper that reads `~/.config/blinddrop/session.json`, ships a skill that tells the agent to use `list_connections` and `execute_http` instead of reading keys, and adds a hook that refuses direct reads of `.env`, key files and the vault directory with a reason pointing at the tool. Start a session with the session file on, from the owner page, the app, or `blinddrop serve --http --allow CONNECTION --port 8787 --session-file ~/.config/blinddrop/session.json`, and Claude Code connects on its next request. The same skill folder installs into Codex and Cursor by copying; the README lists the paths. Hooks and permission rules steer the model; they are not a security boundary, as [SECURITY.md](SECURITY.md) explains.
+
 ## What fits, and what does not
 
 A client must let you configure its base URL and send a header containing

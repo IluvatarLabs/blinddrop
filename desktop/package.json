@@ -1,0 +1,22 @@
+{
+  "name": "blinddrop-desktop",
+  "productName": "BlindDrop",
+  "version": "0.4.0",
+  "private": true,
+  "type": "module",
+  "main": "main.mjs",
+  "scripts": {
+    "vendor": "mkdir -p vendor && cd .. && npm pack --pack-destination desktop/vendor",
+    "start": "electron-forge start",
+    "package": "electron-forge package",
+    "make": "electron-forge make"
+  },
+  "devDependencies": {
+    "@electron-forge/cli": "7.11.2",
+    "@electron-forge/maker-zip": "7.11.2",
+    "electron": "44.4.1"
+  },
+  "dependencies": {
+    "blinddrop": "file:vendor/blinddrop-0.4.0.tgz"
+  }
+}

@@ -17,6 +17,7 @@ const messages = {
   TIMEOUT: "The request timed out. Its upstream outcome may be unknown.",
   UPSTREAM_ERROR: "The upstream request failed. Its outcome may be unknown.",
   BUSY: "The session has reached its concurrent request limit.",
+  PORT_UNAVAILABLE: "The requested local port is unavailable.",
   STORAGE_ERROR: "A local storage operation failed.",
   INPUT_UNAVAILABLE: "Owner input is unavailable. Use a terminal or an inherited input descriptor.",
   INTERNAL_ERROR: "The operation failed."
