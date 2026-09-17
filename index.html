@@ -1,0 +1,257 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BlindDrop — The Local API Key Vault for AI Agents</title>
+<meta name="description" content="BlindDrop lets agents use your API keys without ever seeing them.">
+<meta name="color-scheme" content="dark">
+<style>
+  /* Deep navy page, a translucent blue release card, hairline borders, one soft blue accent. */
+  :root {
+    color-scheme: dark;
+    --bg:      oklch(21.5% 0.045 258);
+    --surface: oklch(17.5% 0.04 258);
+    --fg:      oklch(84% 0.018 255);
+    --band:    oklch(25.5% 0.05 258);
+    --strong:  oklch(97% 0.006 255);
+    --muted:   oklch(72% 0.03 255);
+    --border:  oklch(31% 0.045 258);
+    --accent:  oklch(78% 0.1 248);
+    --ink:        oklch(22% 0.045 258);
+    --font-body: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", system-ui, sans-serif;
+    --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font-family: var(--font-body); font-size: 17px; line-height: 1.65; -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; }
+  img { display: block; max-width: 100%; height: auto; }
+  p { margin: 0 0 1em; text-wrap: pretty; }
+  a { color: var(--accent); text-decoration: underline; text-decoration-color: color-mix(in oklch, var(--accent) 45%, transparent); text-decoration-thickness: 1px; text-underline-offset: 3px; transition: text-decoration-color 0.15s ease; }
+  a:hover { text-decoration-color: var(--accent); }
+  a:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 6px; }
+  code { font-family: var(--font-mono); font-size: 0.88em; background: color-mix(in oklch, var(--fg) 9%, transparent); padding: 1px 6px; border-radius: 5px; white-space: nowrap; }
+  strong { font-weight: 600; color: var(--strong); }
+
+  /* masthead */
+  .masthead { text-align: center; padding: clamp(72px, 10vw, 128px) 24px clamp(56px, 7vw, 88px); background: var(--band); border-bottom: 1px solid var(--border); }
+  h1 { font-size: clamp(56px, 10vw, 104px); font-weight: 700; letter-spacing: -0.035em; line-height: 1; color: var(--strong); margin: 0; }
+  .tagline { font-size: clamp(21px, 2.8vw, 28px); font-weight: 500; letter-spacing: -0.012em; line-height: 1.3; color: var(--strong); margin: 20px 0 0; text-wrap: balance; }
+  .links { display: flex; flex-wrap: wrap; justify-content: center; gap: 12px; margin-top: 36px; }
+  .btn { display: inline-flex; align-items: center; gap: 10px; min-height: 48px; padding: 0 22px; border-radius: 10px; font-size: 16px; font-weight: 600; text-decoration: none; transition: background 0.15s ease, border-color 0.15s ease; }
+  .btn svg { width: 20px; height: 20px; flex: none; }
+  .btn-gh { background: var(--strong); color: var(--ink); }
+  .btn-gh:hover { background: oklch(88% 0.012 255); }
+  .btn-ghost { color: var(--strong); border: 1px solid oklch(42% 0.045 258); }
+  .btn-ghost:hover { background: oklch(31% 0.05 258); border-color: oklch(52% 0.045 258); }
+
+  /* release card */
+  .news { padding-block: clamp(40px, 6vw, 64px) 0; }
+  .news + section { border-top: 0; }
+  .news-card { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: 28px 40px; align-items: center; padding: clamp(22px, 3.5vw, 36px); background: color-mix(in oklch, var(--accent) 13%, transparent); border: 1px solid color-mix(in oklch, var(--accent) 38%, transparent); border-radius: 16px; }
+  .release { display: inline-flex; align-items: center; gap: 10px; min-height: 48px; padding: 0 22px; border-radius: 999px; background: var(--accent); color: var(--surface); font-size: 19px; font-weight: 700; letter-spacing: -0.01em; text-decoration: none; transition: background 0.15s ease; }
+  .release:hover { background: oklch(87% 0.075 248); }
+  .release svg { width: 18px; height: 18px; }
+  .news-card h2 { text-align: left; font-size: clamp(28px, 3.2vw, 34px); margin: 22px 0 10px; }
+  .news-card p { margin: 0; color: var(--fg); text-wrap: balance; }
+  .shot { position: relative; display: block; border-radius: 10px; cursor: zoom-in; text-decoration: none; }
+  .shot img { width: 100%; border-radius: 10px; border: 1px solid var(--border); }
+  .zoom-hint { position: absolute; right: 10px; bottom: 10px; display: inline-flex; align-items: center; gap: 7px; min-height: 32px; padding: 0 12px; border-radius: 999px; background: oklch(22% 0.045 258 / 0.88); color: var(--strong); font-size: 13px; font-weight: 600; transition: background 0.15s ease; }
+  .zoom-hint svg { width: 13px; height: 13px; }
+  .shot:hover .zoom-hint { background: oklch(14% 0.04 258 / 0.96); }
+  @media (max-width: 920px) { .news-card { grid-template-columns: 1fr; } }
+  .zoom { padding: 0; border: 0; background: transparent; max-width: none; max-height: none; overflow: visible; cursor: zoom-out; }
+  .zoom::backdrop { background: oklch(12% 0.03 258 / 0.9); }
+  .zoom img { width: auto; height: auto; max-width: 96vw; max-height: 92vh; border-radius: 10px; }
+  .zoom-close { position: fixed; top: 16px; right: 16px; width: 44px; height: 44px; display: grid; place-items: center; padding: 0; border-radius: 999px; border: 1px solid var(--border); background: var(--surface); color: var(--strong); cursor: pointer; }
+  .zoom-close:hover { background: var(--band); }
+  .zoom-close svg { width: 18px; height: 18px; }
+
+  /* one column; plain centered headings; two equal columns under each */
+  .wrap { width: min(62rem, 100%); margin: 0 auto; padding-inline: clamp(16px, 4vw, 42px); }
+  section { padding-block: clamp(48px, 7vw, 80px); border-top: 1px solid var(--border); }
+  section:first-of-type { border-top: 0; }
+  h2 { font-size: clamp(30px, 4vw, 40px); font-weight: 650; letter-spacing: -0.028em; line-height: 1.15; text-align: center; color: var(--strong); margin: 0 0 clamp(28px, 3.5vw, 44px); text-wrap: balance; }
+  .lead { font-size: clamp(19px, 2.1vw, 21px); line-height: 1.5; letter-spacing: -0.006em; color: var(--strong); }
+  .row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px 48px; align-items: start; }
+  .row + .row { margin-top: 32px; }
+  .row > div > :last-child { margin-bottom: 0; }
+  @media (max-width: 920px) { .row { grid-template-columns: 1fr; } }
+
+  /* code */
+  pre { margin: 0 0 14px; padding: 16px 18px; background: var(--surface); color: var(--fg); border: 1px solid var(--border); border-radius: 8px; font-family: var(--font-mono); font-size: 13.5px; line-height: 1.7; overflow-x: auto; tab-size: 2; }
+  pre code { all: unset; }
+  .prompt { color: var(--muted); user-select: none; }
+  .c { color: var(--muted); }
+  .install { position: relative; margin-bottom: 24px; }
+  .install pre { margin: 0; padding: 20px 104px 20px 20px; font-size: 14px; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .copy { position: absolute; top: 11px; right: 11px; min-height: 44px; padding: 0 18px; border: 0; border-radius: 7px; background: var(--accent); color: var(--surface); font: 600 14px/1 var(--font-body); cursor: pointer; transition: background 0.15s ease; }
+  .copy:hover { background: oklch(87% 0.075 248); }
+  .copy.copied { background: var(--strong); }
+  @media (max-width: 560px) { .install pre { padding: 18px 18px 72px; } .copy { top: auto; bottom: 12px; right: 12px; } }
+
+  /* resources, footer */
+  .resources { display: grid; grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr)); gap: 30px 48px; }
+  h3 { font-size: 19px; font-weight: 600; letter-spacing: -0.005em; color: var(--strong); margin: 0 0 6px; }
+  .resources p { margin: 0; }
+  footer { text-align: center; padding: 56px 24px 72px; border-top: 1px solid var(--border); color: var(--muted); font-size: 14.5px; }
+  .epigraph { font-style: italic; font-size: 16px; color: var(--fg); }
+  footer p { margin: 0 0 18px; }
+  footer p:last-child { margin: 0; }
+</style>
+</head>
+<body>
+<header class="masthead" data-od-id="masthead">
+  <h1 data-od-id="title">BlindDrop</h1>
+  <p class="tagline" data-od-id="tagline">The Local API Key Vault for AI Agents</p>
+  <div class="links" data-od-id="hero-links">
+    <a class="btn btn-gh" href="https://github.com/IluvatarLabs/blinddrop" data-od-id="github-link"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M6.766 11.328c-2.063-.25-3.516-1.734-3.516-3.656 0-.781.281-1.625.75-2.188-.203-.515-.172-1.609.063-2.062.625-.078 1.468.25 1.968.703.594-.187 1.219-.281 1.985-.281.765 0 1.39.094 1.953.265.484-.437 1.344-.765 1.969-.687.218.422.25 1.515.046 2.047.5.593.766 1.39.766 2.203 0 1.922-1.453 3.375-3.547 3.64.531.344.89 1.094.89 1.954v1.625c0 .468.391.734.86.547C13.781 14.359 16 11.53 16 8.03 16 3.61 12.406 0 7.984 0 3.563 0 0 3.61 0 8.031a7.88 7.88 0 0 0 5.172 7.422c.422.156.828-.125.828-.547v-1.25c-.219.094-.5.156-.75.156-1.031 0-1.64-.562-2.078-1.609-.172-.422-.36-.672-.719-.719-.187-.015-.25-.093-.25-.187 0-.188.313-.328.625-.328.453 0 .844.281 1.25.86.313.452.64.655 1.031.655s.641-.14 1-.5c.266-.265.47-.5.657-.656"/></svg>GitHub</a>
+    <a class="btn btn-ghost" href="https://github.com/IluvatarLabs/blinddrop/releases/latest" data-od-id="release-link" data-release-label>Latest release</a>
+  </div>
+</header>
+
+<main class="wrap">
+  <section id="mac" class="news" data-od-id="mac-app">
+    <div class="news-card" data-od-id="mac-announcement">
+      <div>
+        <a class="release" href="https://github.com/IluvatarLabs/blinddrop/releases/latest" data-od-id="new-release">New release<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 8h10M9 4l4 4-4 4"/></svg></a>
+        <h2>BlindDrop for macOS</h2>
+        <p>Unlock your vault and manage keys, connections and agent sessions from a Mac app.</p>
+      </div>
+      <a class="shot" href="assets/app-window.png" data-zoom aria-label="Enlarge the macOS app screenshot" data-od-id="app-screenshot">
+        <img src="assets/app-window.png" width="2000" height="1316" alt="The BlindDrop macOS app: connections on the left; for the selected one, the request BlindDrop sends, the secret it uses, and recent use by agents.">
+        <span class="zoom-hint" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M10 2h4v4M6 14H2v-4M14 2 9.5 6.5M2 14l4.5-4.5"/></svg>Enlarge</span>
+      </a>
+    </div>
+  </section>
+
+  <section id="install" data-od-id="install">
+    <h2>Install BlindDrop</h2>
+    <div class="install" data-od-id="install-command">
+<pre><span class="prompt">$ </span>npm install --global --prefix "$HOME/.local" \
+  <span data-release-tarball>https://github.com/IluvatarLabs/blinddrop/releases/download/v0.3.0/blinddrop-0.3.0.tgz</span></pre>
+      <button type="button" class="copy" data-copy="npm install --global --prefix &quot;$HOME/.local&quot; https://github.com/IluvatarLabs/blinddrop/releases/download/v0.3.0/blinddrop-0.3.0.tgz" data-copy-prefix="npm install --global --prefix &quot;$HOME/.local&quot; " data-od-id="copy-install"><span class="copy-label">Copy</span></button>
+    </div>
+    <div class="row">
+      <div><p>Paste that in a macOS or Linux terminal. Requires Node.js 22.13+.</p></div>
+      <div><p>Add <code>~/.local/bin</code> to your <code>PATH</code>. Other versions are on the <a href="https://github.com/IluvatarLabs/blinddrop/releases">releases page</a>.</p></div>
+    </div>
+  </section>
+
+  <section id="what" data-od-id="what-it-does">
+    <h2>What Does BlindDrop Do?</h2>
+    <div class="row">
+      <div>
+        <p class="lead">BlindDrop lets agents use your API keys without ever seeing them.</p>
+        <p>Keys stay in an encrypted vault on your computer. When an agent calls an API, BlindDrop adds the key, sends the request and returns the response.</p>
+      </div>
+      <div>
+<pre><span class="c"># what the agent sends</span>
+execute_http {
+  "connection": "github",
+  "method": "GET",
+  "path": "/user"
+}
+
+<span class="c"># what BlindDrop sends to api.github.com</span>
+GET /user
+Authorization: Bearer &lt;github-pat&gt;</pre>
+      </div>
+    </div>
+  </section>
+
+  <section id="connections" data-od-id="connections">
+    <h2>BlindDrop Connections</h2>
+    <div class="row">
+      <div>
+        <p class="lead">BlindDrop stores secrets and connections.</p>
+        <p>A <strong>secret</strong> is an API key or token. You type it at a hidden prompt, and BlindDrop never shows it again.</p>
+        <p>A <strong>connection</strong> is what an agent asks for by name: one HTTPS origin, how that API authenticates, and the secrets it uses.</p>
+      </div>
+      <div>
+<pre><span class="prompt">$ </span>blinddrop init
+<span class="prompt">$ </span>blinddrop secret set github-pat
+<span class="prompt">$ </span>blinddrop connection set github \
+    --origin https://api.github.com \
+    --auth bearer --secret github-pat</pre>
+      </div>
+    </div>
+    <div class="row">
+      <div>
+        <p>Supported: bearer tokens, header and query keys, HTTP Basic, OAuth, JWT bearer, AWS SigV4 and client TLS certificates.</p>
+        <p>Anything else goes in a JSON file. See the <a href="https://github.com/IluvatarLabs/blinddrop/blob/HEAD/CONFIGURATION.md">configuration reference</a>.</p>
+      </div>
+      <div>
+<pre><span class="prompt">$ </span>blinddrop connection import partner-api \
+    ./partner-api.json</pre>
+<pre>{
+  "origin": "https://api.example.com",
+  "allowPrivate": false,
+  "enabled": true,
+  "auth": {
+    "type": "bindings",
+    "bindings": [
+      { "in": "json", "name": "client_id",
+        "secret": "client-id" },
+      { "in": "json", "name": "secret",
+        "secret": "client-secret" }
+    ]
+  }
+}</pre>
+      </div>
+    </div>
+  </section>
+
+  <section id="sessions" data-od-id="sessions">
+    <h2>BlindDrop Sessions</h2>
+    <div class="row">
+      <div>
+        <p class="lead">Agents can use connections only while a session runs.</p>
+        <p>Each session allows the connections you name. It lasts an hour unless you set <code>--ttl</code>.</p>
+        <p>The <a href="https://github.com/IluvatarLabs/blinddrop/blob/HEAD/plugin/README.md">Claude Code plugin</a> connects to a running session on its own, and also installs into Codex and Cursor. Other MCP clients get two tools: <code>list_connections</code> and <code>execute_http</code>.</p>
+        <p>For SDKs that accept a base URL, <code>blinddrop run</code> gives one command its own session.</p>
+      </div>
+      <div>
+<pre><span class="prompt">$ </span>blinddrop serve --http --allow github \
+    --ttl 3600
+<span class="c"># prints an MCP URL and session token</span></pre>
+<pre><span class="prompt">$ </span>blinddrop run github -- \
+    node examples/request.mjs /user
+<span class="c"># prints your GitHub account details</span></pre>
+      </div>
+    </div>
+  </section>
+
+  <section id="limits" data-od-id="limits">
+    <h2>What BlindDrop Does Not Do</h2>
+    <div class="row">
+      <div><p>Database connections, SSH, WebSocket, gRPC and browser logins are not supported.</p></div>
+      <div><p>It is not a sandbox, and the API you call still receives the key.</p></div>
+    </div>
+  </section>
+
+  <section id="resources" data-od-id="resources">
+    <h2>BlindDrop Resources</h2>
+    <div class="resources">
+      <div data-od-id="resource-docs"><h3>Documentation</h3><p>Read the <a href="https://github.com/IluvatarLabs/blinddrop/blob/HEAD/CONFIGURATION.md">configuration reference</a>, <a href="https://github.com/IluvatarLabs/blinddrop/blob/HEAD/CLIENTS.md">client guide</a>, <a href="https://github.com/IluvatarLabs/blinddrop/blob/HEAD/OAUTH.md">OAuth guide</a> and <a href="https://github.com/IluvatarLabs/blinddrop/blob/HEAD/FLY.md">Fly.io guide</a>.</p></div>
+      <div data-od-id="resource-source"><h3>Source</h3><p>BlindDrop, the <a href="https://github.com/IluvatarLabs/blinddrop/blob/HEAD/plugin/README.md">agent plugin</a> and the <a href="https://github.com/IluvatarLabs/blinddrop/blob/HEAD/desktop/README.md">macOS app</a> are on <a href="https://github.com/IluvatarLabs/blinddrop">GitHub</a>.</p></div>
+      <div data-od-id="resource-help"><h3>Get Help</h3><p>Open an <a href="https://github.com/IluvatarLabs/blinddrop/issues">issue</a>. Report vulnerabilities through the <a href="https://github.com/IluvatarLabs/blinddrop/blob/HEAD/SECURITY.md">security policy</a>.</p></div>
+      <div data-od-id="resource-releases"><h3>Releases</h3><p>Get the <a href="https://github.com/IluvatarLabs/blinddrop/releases/latest">latest release</a> and read the <a href="https://github.com/IluvatarLabs/blinddrop/blob/HEAD/CHANGELOG.md">changelog</a>.</p></div>
+      <div data-od-id="resource-license"><h3>License</h3><p>Free for noncommercial use under the <a href="https://github.com/IluvatarLabs/blinddrop/blob/HEAD/LICENSE">PolyForm Noncommercial License 1.0.0</a>.</p></div>
+    </div>
+  </section>
+</main>
+
+<footer data-od-id="footer">
+  <p><span class="epigraph">“If you want to keep a secret, you must also hide it from yourself.”</span><br>George Orwell, Nineteen Eighty-Four</p>
+  <p>© Iluvatar Labs</p>
+</footer>
+
+<dialog class="zoom" id="zoom" aria-label="macOS app screenshot" data-od-id="screenshot-zoom">
+  <button type="button" class="zoom-close" aria-label="Close"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg></button>
+  <img src="assets/app-window.png" width="2000" height="1316" alt="The BlindDrop macOS app, full size.">
+</dialog>
+<script src="site.js"></script>
+</body>
+</html>
