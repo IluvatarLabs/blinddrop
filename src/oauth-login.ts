@@ -1,3 +1,4 @@
+import { importConnection } from "./vault-admin.js";
 import {
   closeSync,
   fstatSync,
@@ -19,10 +20,17 @@ import open from "open";
 import { createOAuthTokenRequestOptions } from "./auth.js";
 import { DEFAULT_LIMITS } from "./broker.js";
 import { BlindDropError } from "./errors.js";
+import {
+  DEFAULT_FIELD_ID,
+  DEFAULT_VAULT_NAME,
+  parseSecretRef,
+  resolveValue,
+} from "./references.js";
 import { sendHttps } from "./transport.js";
 import type {
   ClientTls,
   Connection,
+  Field,
   VaultData,
 } from "./types.js";
 import {
@@ -260,12 +268,35 @@ export function readOAuthLoginDefinition(path: string): OAuthLoginDefinition {
   };
 }
 
-function requireSecret(vault: VaultData, name: string): string {
-  const secret = Object.hasOwn(vault.secrets, name) ? vault.secrets[name] : undefined;
-  if (!secret?.enabled || secret.value.length === 0) {
+// OAuth login manages the default vault it unlocked; a reference must resolve
+// to an enabled, nonempty field there.
+function requireSecret(vault: VaultData, reference: string): string {
+  const value = resolveValue(
+    new Map([[DEFAULT_VAULT_NAME, vault]]),
+    parseSecretRef(reference, DEFAULT_VAULT_NAME),
+  );
+  if (value === undefined) {
     throw new BlindDropError("SECRET_NOT_FOUND");
   }
-  return secret.value;
+  return value;
+}
+
+// Writes the rotated refresh token into its field, preserving any sibling
+// fields of the same secret (for example a shared client_secret field).
+function writeRefreshToken(vault: VaultData, reference: string, value: string): void {
+  const ref = parseSecretRef(reference, DEFAULT_VAULT_NAME);
+  if (ref.vault !== DEFAULT_VAULT_NAME) {
+    throw new BlindDropError("INVALID_INPUT");
+  }
+  const fieldId = ref.field ?? DEFAULT_FIELD_ID;
+  const existing = Object.hasOwn(vault.secrets, ref.secret) ? vault.secrets[ref.secret] : undefined;
+  const fields: Record<string, Field> = existing === undefined ? {} : { ...existing.fields };
+  fields[fieldId] = { value, label: "Refresh token", masked: true, multiline: false };
+  vault.secrets[ref.secret] = {
+    type: existing?.type ?? "oauth",
+    fields,
+    enabled: true,
+  };
 }
 
 function validateExistingReferences(vault: VaultData, connection: OAuthLoginDefinition["connection"]): void {
@@ -573,12 +604,9 @@ export async function oauthLogin(options: OAuthLoginOptions): Promise<void> {
     if (login.signal.aborted) throw callbackError(login.signal);
     const latest = loadVault(options.vaultPath, options.passphrase);
     validateExistingReferences(latest, options.definition.connection);
-    latest.secrets[options.definition.connection.auth.refreshSecret] = {
-      value: result.refresh_token,
-      enabled: true,
-    };
-    latest.connections[options.name] = options.definition.connection;
+    writeRefreshToken(latest, options.definition.connection.auth.refreshSecret, result.refresh_token);
     saveVault(options.vaultPath, latest, options.passphrase);
+    importConnection(options.vaultPath, options.passphrase, options.name, options.definition.connection);
   } finally {
     login.close();
     await listener?.close();

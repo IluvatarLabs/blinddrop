@@ -177,19 +177,27 @@ after(async () => {
   temporaryDirectories.clear();
 });
 
+function secret(value, enabled = true) {
+  return {
+    type: "api-key",
+    fields: { value: { value, label: "Value", masked: true, multiline: false } },
+    enabled,
+  };
+}
+
 function vaultFor(targetOrigin = origin) {
   const now = new Date().toISOString();
   return {
-    version: 1,
+    version: 2,
     createdAt: now,
     updatedAt: now,
     secrets: {
-      bearer: { value: CREDENTIALS.bearer, enabled: true },
-      username: { value: CREDENTIALS.username, enabled: true },
-      password: { value: CREDENTIALS.password, enabled: true },
-      header: { value: CREDENTIALS.header, enabled: true },
-      query: { value: CREDENTIALS.query, enabled: true },
-      disabled: { value: "dummy-disabled-Q1w2E3r4", enabled: false },
+      bearer: secret(CREDENTIALS.bearer),
+      username: secret(CREDENTIALS.username),
+      password: secret(CREDENTIALS.password),
+      header: secret(CREDENTIALS.header),
+      query: secret(CREDENTIALS.query),
+      disabled: secret("dummy-disabled-Q1w2E3r4", false),
     },
     connections: {
       bearer: {
@@ -361,7 +369,7 @@ test("all four authentication formats override conflicting agent fields", async 
 test("the broker uses fixed vault and grant snapshots", async () => {
   const state = createBroker();
   try {
-    state.vault.secrets.bearer.value = "mutated-secret";
+    state.vault.secrets.bearer.fields.value.value = "mutated-secret";
     state.vault.connections.bearer.enabled = false;
     state.grant.connections.length = 0;
     const start = records.length;
@@ -374,7 +382,7 @@ test("the broker uses fixed vault and grant snapshots", async () => {
 
 test("scope, expiry, disabled records, unsafe targets, and private rebinding dispatch nothing", async () => {
   const invalidBasicVault = vaultFor();
-  invalidBasicVault.secrets.username.value = "invalid:user";
+  invalidBasicVault.secrets.username.fields.value.value = "invalid:user";
   const cases = [
     {
       state: createBroker({ connections: ["header"] }),

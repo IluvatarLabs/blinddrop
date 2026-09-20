@@ -1,3 +1,5 @@
+import { readConnections, connectionContext } from "../dist/connection-store.js";
+import { qualifyConnection } from "../dist/references.js";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
@@ -343,9 +345,10 @@ test("owner OAuth login uses real PKCE authorization, saves only the refresh gra
   assert.equal(authorizationUrl.searchParams.get("code_challenge_method"), "S256");
 
   const firstSaved = loadVault(local.vault, local.passphrase);
-  assert.equal(firstSaved.secrets["account-refresh"].value, fixture.refreshTokens[0]);
+  assert.equal(firstSaved.secrets["account-refresh"].fields.value.value, fixture.refreshTokens[0]);
   assert.equal(firstSaved.secrets["account-refresh"].enabled, true);
-  assert.deepEqual(firstSaved.connections.account, definition(fixture.origin).connection);
+  assert.deepEqual(firstSaved.connections, {});
+  assert.deepEqual(readConnections(connectionContext(local.vault).path).account, qualifyConnection(firstSaved, "default", definition(fixture.origin).connection));
   assert.equal((await readFile(local.vault)).includes(Buffer.from(fixture.refreshTokens[0])), false);
 
   const first = await session(local.vault, local.passphrase, ["account"]);
@@ -354,7 +357,7 @@ test("owner OAuth login uses real PKCE authorization, saves only the refresh gra
   assert.deepEqual(JSON.parse(firstAccount.structuredContent.body), { account: "functional-owner-account" });
   const firstTraffic = await first.close();
   assert.equal(fixture.refreshInputs[0], fixture.refreshTokens[0]);
-  const persisted = loadVault(local.vault, local.passphrase).secrets["account-refresh"].value;
+  const persisted = loadVault(local.vault, local.passphrase).secrets["account-refresh"].fields.value.value;
   assert.equal(persisted, fixture.refreshTokens[0]);
 
   const second = await session(local.vault, local.passphrase, ["account"]);

@@ -8,6 +8,13 @@ import { importPKCS8, SignJWT } from "jose";
 import * as oauth from "oauth4webapi";
 
 import { BlindDropError } from "./errors.js";
+import {
+  normalizeSnapshot,
+  parseSecretRef,
+  resolveField,
+  resolveValue,
+  type SessionSnapshot,
+} from "./references.js";
 import type {
   Authentication,
   ClientTls,
@@ -284,15 +291,21 @@ function tokenExpiry(expiresIn: number | undefined): number {
 }
 
 export class AuthSession {
-  private readonly vault: VaultData;
+  private readonly vaults: Map<string, VaultData>;
+  private readonly defaultVault: string;
   private readonly persistSecret: PersistSecret | undefined;
   private readonly patterns = new Set<string>();
   private readonly tokens = new Map<string, TokenCache>();
   private readonly pendingTokens = new Map<string, Promise<TokenCache>>();
   private closed = false;
 
-  constructor(vault: VaultData, options: { persistSecret?: PersistSecret } = {}) {
-    this.vault = vault;
+  constructor(
+    source: VaultData | SessionSnapshot,
+    options: { persistSecret?: PersistSecret } = {},
+  ) {
+    const snapshot = normalizeSnapshot(source);
+    this.vaults = snapshot.vaults;
+    this.defaultVault = snapshot.defaultVault;
     this.persistSecret = options.persistSecret;
   }
 
@@ -338,15 +351,13 @@ export class AuthSession {
     this.patterns.clear();
   }
 
-  private secret(name: string): string {
-    const secret = Object.hasOwn(this.vault.secrets, name)
-      ? this.vault.secrets[name]
-      : undefined;
-    if (!secret?.enabled || secret.value.length === 0) {
+  private secret(reference: string): string {
+    const value = resolveValue(this.vaults, parseSecretRef(reference, this.defaultVault));
+    if (value === undefined) {
       throw new BlindDropError("SECRET_NOT_FOUND");
     }
-    addPattern(this.patterns, secret.value);
-    return secret.value;
+    addPattern(this.patterns, value);
+    return value;
   }
 
   private resolveTls(connection: Connection): ClientTls | undefined {
@@ -632,13 +643,14 @@ export class AuthSession {
         if (this.persistSecret === undefined) {
           throw new BlindDropError("STORAGE_ERROR");
         }
+        const ref = parseSecretRef(auth.refreshSecret, this.defaultVault);
         try {
-          await this.persistSecret(auth.refreshSecret, oldRefresh, result.refresh_token);
+          await this.persistSecret(ref, oldRefresh, result.refresh_token);
         } catch {
           throw new BlindDropError("STORAGE_ERROR");
         }
-        const stored = this.vault.secrets[auth.refreshSecret];
-        if (!stored?.enabled || stored.value !== oldRefresh) {
+        const stored = resolveField(this.vaults, ref);
+        if (stored === undefined || stored.value !== oldRefresh) {
           throw new BlindDropError("STORAGE_ERROR");
         }
         stored.value = result.refresh_token;

@@ -9,6 +9,7 @@ import {
   linkSync,
   mkdirSync,
   openSync,
+  readFileSync,
   readSync,
   renameSync,
   unlinkSync,
@@ -25,7 +26,15 @@ import { basename, dirname, join } from "node:path";
 import { z } from "zod";
 
 import { BlindDropError } from "./errors.js";
-import type { Connection, VaultData } from "./types.js";
+import { DEFAULT_FIELD_ID, DEFAULT_VAULT_NAME } from "./references.js";
+import type {
+  Authentication,
+  ClientTlsReferences,
+  Connection,
+  Secret,
+  VaultData,
+  VaultRegistry,
+} from "./types.js";
 
 const ALGORITHM = "aes-256-gcm";
 const FILE_VERSION = 2;
@@ -37,6 +46,11 @@ const HEADER_LENGTH = 1 + SALT_LENGTH + IV_LENGTH + TAG_LENGTH;
 const MAX_ARCHIVE_BYTES = 16 * 1024 * 1024;
 const MAX_VALUE_BYTES = 64 * 1024;
 const MAX_PASSPHRASE_BYTES = 64 * 1024;
+const MAX_LABEL_BYTES = 256;
+const MAX_REGISTRY_BYTES = 256 * 1024;
+const MAX_REGISTRY_ENTRIES = 256;
+const PAYLOAD_VERSION = 2;
+const REGISTRY_VERSION = 1;
 const MAX_FIXED_LITERAL_BYTES = 1_024;
 const MAX_STATIC_FIELD_BYTES = 4_096;
 const MAX_SCOPE_BYTES = 8_192;
@@ -51,6 +65,13 @@ const SCRYPT = {
 } as const;
 
 const NAME_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,62}[A-Za-z0-9])?$/;
+// Field ids are snake_case, matching the upstream credential source a developer
+// copies from (aws_secret_access_key, private_key, client_secret). `#` is
+// excluded, so it is a safe reference delimiter.
+const FIELD_ID_PATTERN = /^[a-z][a-z0-9_]{0,63}$/;
+// The archetype is display metadata; the runtime never branches on it. Kept a
+// short lowercase token so a future archetype does not need a schema change.
+const SECRET_TYPE_PATTERN = /^[a-z][a-z0-9-]{0,31}$/;
 const RESERVED_NAMES = new Set(["constructor", "prototype"]);
 const HEADER_NAME_PATTERN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
 const QUERY_NAME_PATTERN = /^[^\u0000-\u001f\u007f]+$/;
@@ -76,6 +97,14 @@ const ROUTING_HEADERS = new Set([
 ]);
 
 const NameSchema = z.string().refine(isValidName);
+
+const FieldIdSchema = z.string().refine((value) => FIELD_ID_PATTERN.test(value));
+
+// A vault-qualified secret reference used by a connection auth/TLS slot:
+// `vault#secret#field`, `secret#field` (default vault), or bare `secret`
+// (default vault, default field). Vault and secret parts are ordinary names;
+// the field part is a snake_case field id.
+const SecretReferenceSchema = z.string().refine(isValidSecretReference);
 
 const FixedLiteralSchema = z.string().refine(
   (value) =>
@@ -161,7 +190,39 @@ const TokenEndpointSchema = z
     return endpoint.href;
   });
 
+const FieldSchema = z
+  .object({
+    value: z
+      .string()
+      .min(1)
+      .refine((value) => Buffer.byteLength(value, "utf8") <= MAX_VALUE_BYTES),
+    label: z
+      .string()
+      .refine(
+        (value) =>
+          Buffer.byteLength(value, "utf8") <= MAX_LABEL_BYTES &&
+          [...value].every((character) => {
+            const code = character.codePointAt(0) ?? 0;
+            return code > 31 && code !== 127;
+          }),
+      ),
+    masked: z.boolean(),
+    multiline: z.boolean(),
+  })
+  .strict();
+
 const SecretSchema = z
+  .object({
+    type: z.string().refine((value) => SECRET_TYPE_PATTERN.test(value)),
+    fields: z
+      .record(FieldIdSchema, FieldSchema)
+      .refine((fields) => Object.keys(fields).length >= 1),
+    enabled: z.boolean(),
+  })
+  .strict();
+
+// The pre-v0.5.1 payload: one opaque value per secret, bare-name references.
+const SecretSchemaV1 = z
   .object({
     value: z
       .string()
@@ -176,7 +237,7 @@ const SecretBindingSchema = z.discriminatedUnion("in", [
     .object({
       in: z.literal("header"),
       name: CredentialHeaderNameSchema,
-      secret: NameSchema,
+      secret: SecretReferenceSchema,
       prefix: FixedLiteralSchema.optional(),
       suffix: FixedLiteralSchema.optional(),
     })
@@ -185,7 +246,7 @@ const SecretBindingSchema = z.discriminatedUnion("in", [
     .object({
       in: z.literal("query"),
       name: CredentialFieldNameSchema,
-      secret: NameSchema,
+      secret: SecretReferenceSchema,
       prefix: FixedLiteralSchema.optional(),
       suffix: FixedLiteralSchema.optional(),
     })
@@ -194,7 +255,7 @@ const SecretBindingSchema = z.discriminatedUnion("in", [
     .object({
       in: z.literal("json"),
       name: CredentialFieldNameSchema,
-      secret: NameSchema,
+      secret: SecretReferenceSchema,
       prefix: FixedLiteralSchema.optional(),
       suffix: FixedLiteralSchema.optional(),
     })
@@ -203,7 +264,7 @@ const SecretBindingSchema = z.discriminatedUnion("in", [
     .object({
       in: z.literal("form"),
       name: CredentialFieldNameSchema,
-      secret: NameSchema,
+      secret: SecretReferenceSchema,
       prefix: FixedLiteralSchema.optional(),
       suffix: FixedLiteralSchema.optional(),
     })
@@ -211,7 +272,7 @@ const SecretBindingSchema = z.discriminatedUnion("in", [
   z
     .object({
       in: z.literal("path"),
-      secret: NameSchema,
+      secret: SecretReferenceSchema,
       prefix: PathPrefixSchema,
       suffix: PathSuffixSchema.optional(),
     })
@@ -220,25 +281,25 @@ const SecretBindingSchema = z.discriminatedUnion("in", [
 
 const AuthenticationSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("none") }).strict(),
-  z.object({ type: z.literal("bearer"), secret: NameSchema }).strict(),
+  z.object({ type: z.literal("bearer"), secret: SecretReferenceSchema }).strict(),
   z
     .object({
       type: z.literal("basic"),
-      usernameSecret: NameSchema.optional(),
-      passwordSecret: NameSchema.optional(),
+      usernameSecret: SecretReferenceSchema.optional(),
+      passwordSecret: SecretReferenceSchema.optional(),
     })
     .strict(),
   z
     .object({
       type: z.literal("header"),
-      secret: NameSchema,
+      secret: SecretReferenceSchema,
       name: CredentialHeaderNameSchema,
     })
     .strict(),
   z
     .object({
       type: z.literal("query"),
-      secret: NameSchema,
+      secret: SecretReferenceSchema,
       name: CredentialFieldNameSchema,
     })
     .strict(),
@@ -249,8 +310,8 @@ const AuthenticationSchema = z.discriminatedUnion("type", [
       tokenEndpoint: TokenEndpointSchema,
       grant: z.enum(["client_credentials", "refresh_token"]),
       clientId: StaticFieldSchema,
-      clientSecret: NameSchema.optional(),
-      refreshSecret: NameSchema.optional(),
+      clientSecret: SecretReferenceSchema.optional(),
+      refreshSecret: SecretReferenceSchema.optional(),
       clientAuth: z.enum(["basic", "body", "none"]),
       scope: ScopeSchema.optional(),
       audience: OAuthTargetSchema.optional(),
@@ -264,16 +325,16 @@ const AuthenticationSchema = z.discriminatedUnion("type", [
       issuer: StaticFieldSchema,
       subject: StaticFieldSchema.optional(),
       scope: ScopeSchema,
-      privateKeySecret: NameSchema,
+      privateKeySecret: SecretReferenceSchema,
       keyId: StaticFieldSchema.optional(),
     })
     .strict(),
   z
     .object({
       type: z.literal("aws-sigv4"),
-      accessKeyIdSecret: NameSchema,
-      secretAccessKeySecret: NameSchema,
-      sessionTokenSecret: NameSchema.optional(),
+      accessKeyIdSecret: SecretReferenceSchema,
+      secretAccessKeySecret: SecretReferenceSchema,
+      sessionTokenSecret: SecretReferenceSchema.optional(),
       region: StaticFieldSchema,
       service: StaticFieldSchema,
     })
@@ -334,9 +395,9 @@ const AuthenticationSchema = z.discriminatedUnion("type", [
 
 const ClientTlsReferencesSchema = z
   .object({
-    certificateSecret: NameSchema,
-    privateKeySecret: NameSchema,
-    passphraseSecret: NameSchema.optional(),
+    certificateSecret: SecretReferenceSchema,
+    privateKeySecret: SecretReferenceSchema,
+    passphraseSecret: SecretReferenceSchema.optional(),
   })
   .strict();
 
@@ -362,11 +423,38 @@ const IsoTimestampSchema = z.string().refine((value) => {
 
 const VaultSchema = z
   .object({
-    version: z.literal(1),
+    version: z.literal(PAYLOAD_VERSION),
     createdAt: IsoTimestampSchema,
     updatedAt: IsoTimestampSchema,
     secrets: z.record(NameSchema, SecretSchema),
     connections: z.record(NameSchema, ConnectionSchema),
+  })
+  .strict();
+
+// The one-version-back read path. A bare pre-v0.5.1 reference is still a valid
+// reference under `ConnectionSchema` (a name is a one-part reference), so only
+// the secret shape differs between the versions.
+const VaultSchemaV1 = z
+  .object({
+    version: z.literal(1),
+    createdAt: IsoTimestampSchema,
+    updatedAt: IsoTimestampSchema,
+    secrets: z.record(NameSchema, SecretSchemaV1),
+    connections: z.record(NameSchema, ConnectionSchema),
+  })
+  .strict();
+
+const RegistryEntrySchema = z
+  .object({
+    name: NameSchema,
+    path: z.string().min(1).max(4_096).refine((value) => !value.includes("\0")),
+  })
+  .strict();
+
+const RegistrySchema = z
+  .object({
+    version: z.literal(REGISTRY_VERSION),
+    vaults: z.array(RegistryEntrySchema).max(MAX_REGISTRY_ENTRIES),
   })
   .strict();
 
@@ -375,6 +463,20 @@ function isValidName(name: string): boolean {
     NAME_PATTERN.test(name) &&
     !RESERVED_NAMES.has(name.toLowerCase())
   );
+}
+
+function isValidSecretReference(reference: string): boolean {
+  const parts = reference.split("#");
+  if (parts.length === 1) {
+    return isValidName(parts[0]);
+  }
+  if (parts.length === 2) {
+    return isValidName(parts[0]) && FIELD_ID_PATTERN.test(parts[1]);
+  }
+  if (parts.length === 3) {
+    return isValidName(parts[0]) && isValidName(parts[1]) && FIELD_ID_PATTERN.test(parts[2]);
+  }
+  return false;
 }
 
 function isSafePathLiteral(value: string): boolean {
@@ -690,6 +792,12 @@ export function validateName(name: string): void {
   }
 }
 
+export function validateSecretReference(reference: string): void {
+  if (typeof reference !== "string" || !isValidSecretReference(reference)) {
+    throw new BlindDropError("INVALID_INPUT");
+  }
+}
+
 export function validateConnection(connection: unknown): Connection {
   try {
     const parsed = ConnectionSchema.safeParse(connection);
@@ -715,7 +823,7 @@ export function createVault(path: string, passphrase: string): VaultData {
   const now = new Date().toISOString();
   const vault = parseVault(
     {
-      version: 1,
+      version: PAYLOAD_VERSION,
       createdAt: now,
       updatedAt: now,
       secrets: {},
@@ -746,7 +854,128 @@ export function loadVault(path: string, passphrase: string): VaultData {
   } catch {
     throw new BlindDropError("VAULT_INVALID");
   }
-  return parseVault(decoded, "VAULT_INVALID");
+  return parseDecodedVault(decoded, "VAULT_INVALID");
+}
+
+/**
+ * Routes a decrypted payload by its schema version. The current version parses
+ * directly; the one-version-back v1 payload is migrated in memory. Any other
+ * value is an unsupported or damaged archive and fails explicitly rather than
+ * being silently reset.
+ */
+function parseDecodedVault(decoded: unknown, error: "INVALID_INPUT" | "VAULT_INVALID"): VaultData {
+  const version =
+    typeof decoded === "object" && decoded !== null && "version" in decoded
+      ? (decoded as { version: unknown }).version
+      : undefined;
+  if (version === PAYLOAD_VERSION) {
+    return parseVault(decoded, error);
+  }
+  if (version === 1) {
+    return parseVault(migrateFromV1(decoded, error), error);
+  }
+  throw new BlindDropError(error);
+}
+
+/** Appends the default field id to a bare pre-v0.5.1 reference. */
+function migrateReference(reference: string): string {
+  return reference.includes("#") ? reference : `${reference}#${DEFAULT_FIELD_ID}`;
+}
+
+function migrateAuthentication(auth: Authentication): Authentication {
+  switch (auth.type) {
+    case "none":
+      return auth;
+    case "bearer": case "header": case "query":
+      return { ...auth, secret: migrateReference(auth.secret) };
+    case "basic":
+      return {
+        ...auth,
+        ...(auth.usernameSecret === undefined ? {} : { usernameSecret: migrateReference(auth.usernameSecret) }),
+        ...(auth.passwordSecret === undefined ? {} : { passwordSecret: migrateReference(auth.passwordSecret) }),
+      };
+    case "bindings":
+      return { ...auth, bindings: auth.bindings.map((binding) => ({ ...binding, secret: migrateReference(binding.secret) })) };
+    case "oauth2":
+      return {
+        ...auth,
+        ...(auth.clientSecret === undefined ? {} : { clientSecret: migrateReference(auth.clientSecret) }),
+        ...(auth.refreshSecret === undefined ? {} : { refreshSecret: migrateReference(auth.refreshSecret) }),
+      };
+    case "jwt-bearer":
+      return { ...auth, privateKeySecret: migrateReference(auth.privateKeySecret) };
+    case "aws-sigv4":
+      return {
+        ...auth,
+        accessKeyIdSecret: migrateReference(auth.accessKeyIdSecret),
+        secretAccessKeySecret: migrateReference(auth.secretAccessKeySecret),
+        ...(auth.sessionTokenSecret === undefined ? {} : { sessionTokenSecret: migrateReference(auth.sessionTokenSecret) }),
+      };
+  }
+}
+
+function migrateTls(tls: ClientTlsReferences): ClientTlsReferences {
+  return {
+    certificateSecret: migrateReference(tls.certificateSecret),
+    privateKeySecret: migrateReference(tls.privateKeySecret),
+    ...(tls.passphraseSecret === undefined ? {} : { passphraseSecret: migrateReference(tls.passphraseSecret) }),
+  };
+}
+
+/**
+ * Migrates a v1 payload to the v0.5.1 shape in memory: each single-value secret
+ * becomes an `api-key` secret with one `value` field, and each connection's
+ * bare references are rewritten to `secret#value`. The migrated object is
+ * returned for the caller to validate as a current-version payload; the archive
+ * on disk is untouched until the owner next saves it.
+ */
+function migrateFromV1(decoded: unknown, error: "INVALID_INPUT" | "VAULT_INVALID"): unknown {
+  const parsed = VaultSchemaV1.safeParse(decoded);
+  if (!parsed.success) {
+    throw new BlindDropError(error);
+  }
+
+  const secrets: Record<string, Secret> = {};
+  for (const [name, secret] of Object.entries(parsed.data.secrets)) {
+    secrets[name] = {
+      type: "api-key",
+      fields: {
+        [DEFAULT_FIELD_ID]: {
+          value: secret.value,
+          label: "Value",
+          masked: true,
+          multiline: false,
+        },
+      },
+      enabled: secret.enabled,
+    };
+  }
+
+  const connections: Record<string, Connection> = {};
+  for (const [name, connection] of Object.entries(parsed.data.connections)) {
+    connections[name] = {
+      ...connection,
+      auth: migrateAuthentication(connection.auth),
+      ...(connection.tls === undefined ? {} : { tls: migrateTls(connection.tls) }),
+    };
+  }
+
+  return {
+    version: PAYLOAD_VERSION,
+    createdAt: parsed.data.createdAt,
+    updatedAt: parsed.data.updatedAt,
+    secrets,
+    connections,
+  };
+}
+
+/** Validates one secret record, used by the broker to re-check its snapshot. */
+export function validateSecret(secret: unknown): Secret {
+  const parsed = SecretSchema.safeParse(secret);
+  if (!parsed.success) {
+    throw new BlindDropError("INVALID_INPUT");
+  }
+  return parsed.data;
 }
 
 export function saveVault(path: string, vault: VaultData, passphrase: string): void {
@@ -765,4 +994,75 @@ export function saveVault(path: string, vault: VaultData, passphrase: string): v
     plaintext.fill(0);
   }
   writeArchive(path, archive, false);
+}
+
+/**
+ * The vault registry: the set of encrypted vault files this installation knows,
+ * each with a display name used as the reference vault qualifier. It holds no
+ * passphrases and no secret values — only paths and names — so it is plaintext
+ * at mode 0600. The default vault is always present.
+ */
+export function registryPath(configDir?: string): string {
+  return join(configDir ?? dirname(defaultVaultPath()), "vaults.json");
+}
+
+/** Guarantees the default entry exists and every vault name is unique. */
+function normalizeRegistry(registry: VaultRegistry): VaultRegistry {
+  const names = new Set<string>();
+  const vaults = [] as VaultRegistry["vaults"];
+  let hasDefault = false;
+  for (const entry of registry.vaults) {
+    if (names.has(entry.name)) {
+      throw new BlindDropError("VAULT_INVALID");
+    }
+    names.add(entry.name);
+    if (entry.name === DEFAULT_VAULT_NAME) {
+      hasDefault = true;
+    }
+    vaults.push({ name: entry.name, path: entry.path });
+  }
+  if (!hasDefault) {
+    vaults.unshift({ name: DEFAULT_VAULT_NAME, path: defaultVaultPath() });
+  }
+  return { version: REGISTRY_VERSION, vaults };
+}
+
+export function loadRegistry(configDir?: string): VaultRegistry {
+  const path = registryPath(configDir);
+  let contents: Buffer;
+  try {
+    contents = readFileSync(path);
+  } catch (error) {
+    if (errorCode(error) === "ENOENT") {
+      return normalizeRegistry({ version: REGISTRY_VERSION, vaults: [] });
+    }
+    throw new BlindDropError("STORAGE_ERROR");
+  }
+  if (contents.length > MAX_REGISTRY_BYTES) {
+    throw new BlindDropError("VAULT_INVALID");
+  }
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(contents.toString("utf8"));
+  } catch {
+    throw new BlindDropError("VAULT_INVALID");
+  }
+  const parsed = RegistrySchema.safeParse(decoded);
+  if (!parsed.success) {
+    throw new BlindDropError("VAULT_INVALID");
+  }
+  return normalizeRegistry(parsed.data);
+}
+
+export function saveRegistry(registry: VaultRegistry, configDir?: string): void {
+  const parsed = RegistrySchema.safeParse(registry);
+  if (!parsed.success) {
+    throw new BlindDropError("INVALID_INPUT");
+  }
+  const normalized = normalizeRegistry(parsed.data);
+  const serialized = Buffer.from(JSON.stringify(normalized), "utf8");
+  if (serialized.length > MAX_REGISTRY_BYTES) {
+    throw new BlindDropError("INVALID_INPUT");
+  }
+  writeArchive(registryPath(configDir), serialized, false);
 }

@@ -46,8 +46,8 @@ installs it permanently instead:
 
 The plugin reads the session file BlindDrop writes, defaulting to
 `~/.config/blinddrop/session.json`. Set `BLINDDROP_SESSION_FILE` to read another
-path. The owner starts the session in the BlindDrop app, or in their own
-terminal:
+path. The owner unlocks the BlindDrop app, which runs a session for as long as
+a vault stays unlocked, or starts one in their own terminal:
 
 ```sh
 blinddrop serve --http --allow work-api --ttl 3600 --session-file ~/.config/blinddrop/session.json

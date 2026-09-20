@@ -13,13 +13,15 @@ sequenceDiagram
     participant B as System browser
     participant P as OAuth provider
     participant V as Encrypted archive
+    participant C as Owner connection configuration
     O->>F: oauth login NAME FILE, hidden unlock
     F->>B: Authorization URL, state and PKCE challenge
     B->>P: Sign in and consent
     P->>F: Code at temporary loopback callback
     F->>P: Code and private PKCE verifier
     P->>F: Access token and refresh token
-    F->>V: Save refresh token and connection together
+    F->>V: Save refresh token
+    F->>C: Save connection with secret references
     Note over F,V: A later MCP helper refreshes internally and calls the API
 ```
 

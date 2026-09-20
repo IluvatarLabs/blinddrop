@@ -1,3 +1,4 @@
+import { readConnections, connectionContext } from "../dist/connection-store.js";
 import assert from "node:assert/strict";
 import { copyFile, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -53,6 +54,7 @@ test("passwd preserves the archive and changes only the current copy's unlock", 
     "--secret", "api-token",
   ]);
   await copyFile(vaultPath, backupPath);
+  await copyFile(connectionContext(vaultPath).path, connectionContext(backupPath).path);
 
   const beforeWrongInput = await readFile(vaultPath);
   const wrong = await failedOwner(
@@ -71,7 +73,7 @@ test("passwd preserves the archive and changes only the current copy's unlock", 
     },
   );
   assert.deepEqual(await readFile(vaultPath), beforeWrongInput);
-  assert.equal(loadVault(vaultPath, oldPassphrase).secrets["api-token"].value, secret);
+  assert.equal(loadVault(vaultPath, oldPassphrase).secrets["api-token"].fields.value.value, secret);
 
   const changed = await owner(
     vaultPath,
@@ -86,8 +88,9 @@ test("passwd preserves the archive and changes only the current copy's unlock", 
   assert.notDeepEqual(await readFile(vaultPath), beforeWrongInput);
 
   const current = loadVault(vaultPath, newPassphrase);
-  assert.equal(current.secrets["api-token"].value, secret);
-  assert.deepEqual(current.connections.api.auth, { type: "bearer", secret: "api-token" });
+  assert.equal(current.secrets["api-token"].fields.value.value, secret);
+  assert.deepEqual(current.connections, {});
+  assert.deepEqual(readConnections(connectionContext(vaultPath).path).api.auth, { type: "bearer", secret: "default#api-token#value" });
 
   const oldRejected = await failedOwner(
     vaultPath,

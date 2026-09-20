@@ -55,7 +55,7 @@ The agent sends its ordinary JSON request body; BlindDrop supplies or replaces t
 
 For a token embedded before an API method path, use `{"in":"path","prefix":"/bot","secret":"bot-token"}`. An agent request for `/getMe` becomes the API's authenticated path inside BlindDrop. The origin remains fixed; the authenticated URL is never returned. There is no general-purpose templating language.
 
-Other `auth` objects use these fields. Names ending in `Secret`, plus `clientSecret` and `refreshSecret`, refer to vault entries:
+Other `auth` objects use these fields. Names ending in `Secret`, plus `clientSecret` and `refreshSecret`, refer to vault entries. A reference may be vault-qualified and field-qualified as `vault#secret#field`; a bare name resolves in the default vault to its `value` or sole field (see [Secrets and fields](#secrets-and-fields)):
 
 | `type` | Required fields | Optional fields / limits |
 |---|---|---|
@@ -93,11 +93,87 @@ An encrypted private key can add `passphraseSecret`. Store PEM contents using th
 
 ## Owner GUI
 
-`blinddrop ui` starts an owner-only page on a loopback port and opens it in your default browser; `--no-browser` prints the URL instead and `--port` fixes the port. The page manages the same archive as the commands above: create or unlock the vault, add or disable secrets and connections, import a compound definition, change the passphrase, and start or stop an agent session with chosen connections, a lifetime and a port. The page's URL carries a one-time owner token; every request needs it, the listener accepts only its own origin, and the token is never given to an agent. The passphrase you type is held in the `ui` process's memory only, as `serve` holds it. Quit from the page or press Ctrl-C in the terminal to stop; closing the tab alone leaves the process running.
+`blinddrop ui` starts an owner-only page on a loopback port and opens it in your default browser; `--no-browser` prints the URL instead and `--port` fixes the port. The page manages your vaults and connections: create, open, unlock or lock a vault; add, replace, turn off or remove typed multi-field secrets and connections; prefill a connection from a template; import a compound definition; group connections; read the use log; back up a vault and change its passphrase. The page's URL carries a one-time owner token; every request needs it, the listener accepts only its own origin, and the token is never given to an agent. Passphrases you type are held in the `ui` process's memory only, as `serve` holds them. Quit from the page or press Ctrl-C in the terminal to stop; closing the tab alone leaves the process running.
 
-A session started from the page defaults to port 8787 and, unless you untick the option, writes `~/.config/blinddrop/session.json` at mode 0600 with the MCP URL, session token, expiry and connection base URLs. The BlindDrop Claude Code plugin reads that file to connect automatically; the file is deleted when the session ends. The CLI writes the same file only with `serve --http --session-file PATH`.
+### Vaults
 
-The macOS app in `desktop/` hosts the same server and page in its own window; quitting the app ends every session. Linux and Windows use the browser page.
+A vault is one encrypted file with its own passphrase and its own lock state, and you can have several. Each vault reuses the same key derivation and authenticated encryption as before, so no new cryptography is involved. A registry at `~/.config/blinddrop/vaults.json` records each vault's name and path only — never a passphrase. The registry always has a `default` entry, initially `~/.config/blinddrop/vault.enc`; first use can choose a different location for it; opening or creating another vault adds its name and path to the registry, and removing one only unregisters it (the file stays on disk and the default vault cannot be removed).
+
+You unlock and lock each vault on its own. Unlocking a vault decrypts only that vault into the page's process; the others stay encrypted at rest, so a mishandled passphrase exposes one vault rather than all of your secrets. This least-privilege unlock is the reason to keep separate trust domains in separate vaults.
+
+Because every secret reference is vault-qualified (see [Secrets and fields](#secrets-and-fields)), a connection is usable in the session only while every vault holding its referenced secrets is unlocked. Locking a vault removes just its dependent connections from the running session and leaves the rest; the session is recomputed whenever any vault is locked or unlocked.
+
+### Screens
+
+The page opens on one of three screens, with Settings in a window of its own. **Welcome** creates a new vault at a location you choose, or opens an existing one from the recent list. **Unlock** takes the passphrase for a configured but locked vault; `Open another vault…` returns to Welcome. **The vault window** has the sidebar on the left, the top-level Connections, Secrets and Activity views in the middle, and the detail pane on the right. The sidebar lists your vaults with each one's locked or unlocked state and lets you unlock, lock, create or open another. Connections show as a list or a table and can be grouped; opening a secret shows its field editor; adding a connection offers the template picker with Custom last. **Settings** has the General, Security, Sessions, Vault and Advanced tabs.
+
+Which screen opens first follows the configured vault: a `--vault` path if you gave one, otherwise the last vault recorded in settings, otherwise `~/.config/blinddrop/vault.enc`. An existing vault opens Unlock while all vaults are locked, whether or not connections have been saved. If no configured vault file exists, the page opens Welcome. Locking the last unlocked vault returns to Unlock. Once a vault is unlocked the vault window shows the full vault list, and you open, create, unlock or lock the others from there.
+
+### The session
+
+Unlocking a vault starts or recomputes the agent session using the secrets now available; locking every vault, quitting, or closing the owner process ends it. There is no session to start or stop by hand. The session grants every connection that is enabled and whose referenced secret fields all exist, are enabled, and resolve in a currently unlocked vault; a connection missing one of those is shown as not in the session, with the reason. Every owner change — a secret or connection written, turned on, turned off or removed, a passphrase change, or a vault locked or unlocked — recomputes the session from the new snapshot, so a change applies without further action. Requests in flight during that restart fail.
+
+The session uses the port in Settings › Sessions, 8787 by default, and the maximum lifetime of 86400 seconds; it is renewed while the vault stays unlocked. If that port is already held by another process, the vault still unlocks for editing and the page reports `Port 8787 is in use. Agents cannot attach until it is changed in Settings › Sessions.`, naming the port it tried. Change the port there to start the session.
+
+While the session runs and Settings › Sessions › Agent plugins is on, which is the default, the session record is written to `~/.config/blinddrop/session.json` at mode 0600 with the MCP URL, session token, expiry and connection base URLs. It is always in the configuration directory, whatever path the vault file has, so the BlindDrop Claude Code plugin finds it. The file is deleted when the session ends. The CLI writes the same file only with `serve --http --session-file PATH`.
+
+### Secrets and fields
+
+A secret has a type and one or more named fields. Choosing a type in the field editor prefills the fields that type usually needs — for example an `aws` secret starts with an access-key id and a secret access key, a `login` with a username and password, a `tls` bundle with a certificate and private key — and you can edit labels and values, remove fields or add custom fields, with no fixed count of custom fields beyond the archive and request size limits. Existing field IDs are read-only so editing a label does not break connections; new field IDs are chosen before saving. The built-in types are `api-key`, `login`, `keypair`, `aws`, `tls`, `oauth`, `jwt` and `custom`. Each field records a human label, whether it is masked (concealed, like a password or token) or shown (like an access-key id), and whether it is multiline (a PEM block, whose exact bytes are kept). Replacing a secret keeps the value of any field you leave blank.
+
+Field ids use the same snake_case as the source you copy from (`aws_secret_access_key`, `client_secret`, `private_key`), so a field name matches what the connection consumes and there is nothing to translate. Several parts of one credential can therefore live as fields of one secret instead of separate secrets. The `blinddrop secret set` command still creates a single-value secret (one `value` field); the field editor is where typed multi-field secrets are built.
+
+A connection points at one field with a vault-qualified reference `vault#secret#field`. `secret#field` and a bare `secret` resolve in the default vault. A bare reference with no field resolves to the field named `value` — what a single-value or migrated secret uses — or to the only field of a single-field secret; a multi-field secret is addressed by field. The connection editor lets you select any stored field. On import or migration, unqualified references are bound to the selected/source vault and saved in the full form, so opening an old archive as another vault cannot use a same-named default-vault secret.
+
+### Connection storage and migration
+
+When adding a connection with a bare secret reference, unlock that secret's
+vault first so its default field can be resolved. An explicit field reference
+can be saved while that vault is locked, provided another vault is unlocked;
+the connection remains unavailable until every referenced vault is unlocked.
+
+Connections belong to one independent list in `~/.config/blinddrop/connections.json`, at mode 0600. This file contains origins, authentication settings and secret references, never stored secret values. Vaults hold secrets. Connections are visible and editable only while at least one vault is unlocked. Their referenced fields alone determine whether they can join the agent session; an unrelated locked vault does not revoke them. When all vaults are locked, connection listing and edits, Activity and Groups are unavailable.
+
+When an old archive is unlocked, its embedded connections are qualified against that vault and copied to this list before the encrypted archive is rewritten without them. Identical definitions are reused on retry. Different definitions with the same name retain both, adding a source-vault suffix to the imported name. No passphrase changes.
+
+CLI commands for a registered vault use the same list. A standalone `--vault` archive uses `<vault-path>.connections.json`; opening it in the app imports that sidecar and remaps its `default` references to the registered vault name. Back up the sidecar with a standalone archive. CLI `serve` still unlocks only the archive selected by `--vault`; use the owner page for connections spanning multiple vaults.
+
+### Connection templates
+
+Adding a connection starts from a template rather than a blank form. A template is a static prefill — the provider's HTTPS origin, its authentication mechanism and placement, and the secret fields it needs — so picking one creates the connection and the shaped secret in a couple of steps. Templates are configuration in the page, not per-vendor code in the runtime: the request path still uses the generic authentication mechanisms, and there is no runtime provider catalogue. Custom is the explicit fallback, listed last, for anything without a template.
+
+A template can only use a mechanism BlindDrop already implements. A provider that needs something else is flagged rather than faked — for example Backblaze's native B2 authorization returns a dynamic API host the fixed-origin runtime cannot follow, so its template uses Backblaze's S3-compatible endpoint with AWS SigV4 instead.
+
+### Settings
+
+Settings are stored in `~/.config/blinddrop/settings.json` at mode 0600 and read and written through the page, because the page's origin changes with its loopback port on every launch.
+
+| Field | Type and default | Effect |
+|---|---|---|
+| `appearance` | `"system"`, `"light"` or `"dark"`; default `"system"` | Page theme |
+| `sessionPort` | integer 1–65535; default 8787 | Port the agent session listens on |
+| `sessionFile` | boolean; default true | Write the session file while the session runs |
+| `lockOnSleep` | boolean; default true | App only: lock when the computer sleeps |
+| `lockOnScreenLock` | boolean; default false | App only: lock when the screen locks |
+| `openAtLogin` | boolean; default false | App only: open at login |
+| `lastVault` | path or null | Vault opened at the next start |
+| `recentVaults` | up to 10 paths, newest first | The Welcome screen's list of vaults to open |
+| `lastBackupAt` | timestamp or null | Shown in Settings › Vault |
+| `ui` | object of at most 4 KiB | The page's own view state |
+
+### Groups
+
+Groups are owner-side labels for connections. The encrypted archive does not store them and agents never see them: they live in a `<config dir>/groups.json` file at mode 0600 keyed by connection name, shared across vaults. Old `vault#connection` keys migrate when their archive is unlocked. Group names obey the same rules as other local names; at most 64 groups, and at most 16 groups per connection.
+
+### Activity and backups
+
+The owner page writes and reads `~/.config/blinddrop/vault.enc.events.jsonl` for every session, including when only another vault is unlocked. CLI sessions use `<vault-path>.events.jsonl`, as described under [Replace, disable, and back up](#replace-disable-and-back-up), taking a bounded tail of the file rather than all of it and showing the newest events first. Clearing it from the page truncates that file. `Back up now…` copies the encrypted archive byte for byte to a path you choose; it refuses a path that already exists, so a backup never overwrites one, and records the time in Settings › Vault.
+
+### Browser and app
+
+In the browser, the page draws its own menu bar — app, File, Edit, View, Window and Help — because those menus are the only way to reach Settings, About, the shortcut list and `Open vault…` there. Where the app opens a file dialog, the browser page takes a path in a text field.
+
+The macOS app in `desktop/` hosts the same server and page in its own window, and quitting it ends the session. It adds the native application menu, system file dialogs for creating, opening and backing up a vault, `Reveal in Finder` for the vault and the use log, locking when the computer sleeps or the screen locks, and opening at login. Linux and Windows use the browser page.
 
 ## Agent session
 
@@ -118,7 +194,7 @@ Configure a terminal-launched stdio MCP client to use the installed executable. 
 
 With a terminal-launched client, the helper prompts the owner on the controlling terminal, keeping MCP stdin/stdout for protocol messages. Unlock once per helper session. Repeat `--allow` for more connections; no wildcard grant is provided. The default lifetime is one hour, with a range of 1–86400 seconds. The helper exits on expiry, client input closure, SIGINT, or SIGTERM.
 
-A headless host without a controlling terminal must supply owner input through inherited descriptors. Global `--password-fd 3` reads the passphrase from descriptor 3; `secret set ... --secret-fd 4` can similarly read a value. The trusted launcher must create and pass those descriptors: adding their numbers to MCP JSON alone does not create the input. Input is bounded UTF-8, read to EOF, with one trailing newline removed; descriptors close after use. No passphrase environment variable or plaintext cache is provided. Alternatively, start `serve --http` in your terminal and attach the headless host using the temporary session token ([HTTP setup](CLIENTS.md#attach-an-independently-launched-mcp-host)). The owner GUI is an owner-side page, not a host unlock dialog: use it to start a session and copy the URL and token for a headless host, or leave the session file on so the Claude Code plugin attaches automatically.
+A headless host without a controlling terminal must supply owner input through inherited descriptors. Global `--password-fd 3` reads the passphrase from descriptor 3; `secret set ... --secret-fd 4` can similarly read a value. The trusted launcher must create and pass those descriptors: adding their numbers to MCP JSON alone does not create the input. Input is bounded UTF-8, read to EOF, with one trailing newline removed; descriptors close after use. No passphrase environment variable or plaintext cache is provided. Alternatively, start `serve --http` in your terminal and attach the headless host using the temporary session token ([HTTP setup](CLIENTS.md#attach-an-independently-launched-mcp-host)). The owner GUI is an owner-side page, not a host unlock dialog: unlock it and leave the session file on so the Claude Code plugin attaches automatically, or use `serve --http` in your terminal for a host you configure by hand.
 
 The server exposes exactly two tools: `list_connections` for permitted metadata and `execute_http` for requests. Example request:
 
@@ -151,7 +227,7 @@ blinddrop passwd
 
 `passwd` unlocks with the old passphrase, prompts for and confirms the new one, then atomically re-encrypts the archive. A trusted launcher can supply `--password-fd 3 passwd --new-password-fd 4`. Existing helpers must be stopped first; backups retain their original passphrase.
 
-Back up or move the encrypted archive by copying it. Restore the copy at a selected `--vault` path and unlock with the same passphrase. There is no passphrase-recovery bypass. Use events are appended to `<vault-path>.events.jsonl`, containing timestamp, grant identifier, known connection name, outcome, and error code. Request bodies, query values, and credentials are excluded. It is a local diagnostic log, not an audit ledger or automatically rotated archive. A log append failure produces a static warning while preserving the request's actual result.
+Copy an encrypted archive to back up its secrets, and unlock a restored copy with the same passphrase. To restore the complete app setup, also retain `connections.json`, `vaults.json` (adjust paths when moving machines), and any wanted `groups.json` and `settings.json`. For a standalone CLI archive, copy its `<vault-path>.connections.json` sidecar to the matching path beside the restored archive. The page's **Back up now…** action copies only the selected encrypted vault, not this separate configuration. There is no passphrase-recovery bypass. Use events are appended to `<vault-path>.events.jsonl`, containing timestamp, grant identifier, known connection name, outcome, and error code. Request bodies, query values, and credentials are excluded. It is a local diagnostic log, not an audit ledger or automatically rotated archive. A log append failure produces a static warning while preserving the request's actual result.
 
 ## Limits
 

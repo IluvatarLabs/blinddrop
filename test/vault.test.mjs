@@ -18,7 +18,10 @@ import { test } from "node:test";
 
 import {
   createVault,
+  loadRegistry,
   loadVault,
+  registryPath,
+  saveRegistry,
   saveVault,
   validateConnection,
   validateName,
@@ -26,6 +29,15 @@ import {
 
 const PASSPHRASE = "dummy test passphrase";
 const SECRET_VALUE = "  token:\n秘密 🔑\twith whitespace\r\n";
+
+/** A single-field secret in the v0.5.1 shape, matching what migration writes. */
+function secret(value, enabled = true) {
+  return {
+    type: "api-key",
+    fields: { value: { value, label: "Value", masked: true, multiline: false } },
+    enabled,
+  };
+}
 
 function workspace(t) {
   const directory = mkdtempSync(join(tmpdir(), "blinddrop-vault-test-"));
@@ -90,8 +102,8 @@ test("encrypted archive round-trips and a byte-for-byte copy restores", (t) => {
   const restoredPath = join(directory, "restored.enc");
   const vault = createVault(path, PASSPHRASE);
 
-  vault.secrets.API_KEY = { value: SECRET_VALUE, enabled: true };
-  vault.secrets.Spacing = { value: "  \t  ", enabled: true };
+  vault.secrets.API_KEY = secret(SECRET_VALUE);
+  vault.secrets.Spacing = secret("  \t  ");
   vault.connections["Work.API"] = validateConnection({
     origin: " https://EXAMPLE.com:443/ ",
     auth: { type: "bearer", secret: "API_KEY" },
@@ -107,9 +119,9 @@ test("encrypted archive round-trips and a byte-for-byte copy restores", (t) => {
   assert.equal(statSync(dirname(path)).mode & 0o077, 0);
 
   const loaded = loadVault(path, PASSPHRASE);
-  assert.equal(loaded.version, 1);
-  assert.equal(loaded.secrets.API_KEY.value, SECRET_VALUE);
-  assert.equal(loaded.secrets.Spacing.value, "  \t  ");
+  assert.equal(loaded.version, 2);
+  assert.equal(loaded.secrets.API_KEY.fields.value.value, SECRET_VALUE);
+  assert.equal(loaded.secrets.Spacing.fields.value.value, "  \t  ");
   assert.equal(loaded.connections["Work.API"].origin, "https://example.com");
 
   copyFileSync(path, restoredPath);
@@ -145,20 +157,20 @@ test("initialization and invalid input preserve an existing archive", (t) => {
   const directory = workspace(t);
   const path = join(directory, "vault.enc");
   const vault = createVault(path, PASSPHRASE);
-  vault.secrets.Current = { value: "dummy-current", enabled: true };
+  vault.secrets.Current = secret("dummy-current");
   saveVault(path, vault, PASSPHRASE);
   const original = readFileSync(path);
 
   assert.throws(() => createVault(path, "another passphrase"), throwsCode("VAULT_EXISTS"));
   assert.deepEqual(readFileSync(path), original);
 
-  vault.secrets.Empty = { value: "", enabled: true };
+  vault.secrets.Empty = secret("");
   assert.throws(() => saveVault(path, vault, PASSPHRASE), throwsCode("INVALID_INPUT"));
   delete vault.secrets.Empty;
-  vault.secrets.TooLarge = { value: "x".repeat(64 * 1024 + 1), enabled: true };
+  vault.secrets.TooLarge = secret("x".repeat(64 * 1024 + 1));
   assert.throws(() => saveVault(path, vault, PASSPHRASE), throwsCode("INVALID_INPUT"));
   assert.deepEqual(readFileSync(path), original);
-  assert.equal(loadVault(path, PASSPHRASE).secrets.Current.value, "dummy-current");
+  assert.equal(loadVault(path, PASSPHRASE).secrets.Current.fields.value.value, "dummy-current");
 });
 
 test("concurrent initialization publishes exactly one complete archive", async (t) => {
@@ -177,7 +189,7 @@ test("concurrent initialization publishes exactly one complete archive", async (
   assert.ok(winner);
   assert.equal(
     loadVault(path, `dummy concurrent passphrase ${winner.marker}`).version,
-    1,
+    2,
   );
   assert.deepEqual(readdirSync(directory), ["vault.enc"]);
 });
@@ -190,10 +202,10 @@ test(
     const ownerDirectory = join(directory, "owner");
     const path = join(ownerDirectory, "vault.enc");
     const vault = createVault(path, PASSPHRASE);
-    vault.secrets.Current = { value: "before-failure", enabled: true };
+    vault.secrets.Current = secret("before-failure");
     saveVault(path, vault, PASSPHRASE);
 
-    vault.secrets.Current.value = "after-failure";
+    vault.secrets.Current.fields.value.value = "after-failure";
     chmodSync(ownerDirectory, 0o500);
     try {
       assert.throws(() => saveVault(path, vault, PASSPHRASE), throwsCode("STORAGE_ERROR"));
@@ -201,7 +213,7 @@ test(
       chmodSync(ownerDirectory, 0o700);
     }
 
-    assert.equal(loadVault(path, PASSPHRASE).secrets.Current.value, "before-failure");
+    assert.equal(loadVault(path, PASSPHRASE).secrets.Current.fields.value.value, "before-failure");
     assert.deepEqual(readdirSync(ownerDirectory), ["vault.enc"]);
   },
 );
@@ -520,4 +532,32 @@ test("connection validation covers bounded compatibility authentication and TLS 
   for (const connection of invalid) {
     assert.throws(() => validateConnection(connection), throwsCode("INVALID_INPUT"));
   }
+});
+
+test("the vault registry round-trips at mode 0600 with the default vault always present", (t) => {
+  const directory = workspace(t);
+
+  // With no registry file yet, the default vault is the sole known entry.
+  const initial = loadRegistry(directory);
+  assert.equal(initial.version, 1);
+  assert.deepEqual(initial.vaults.map((entry) => entry.name), ["default"]);
+
+  // Saving a registry that names another vault keeps the default present.
+  saveRegistry(
+    { version: 1, vaults: [{ name: "work", path: join(directory, "work.enc") }] },
+    directory,
+  );
+  assert.equal(statSync(registryPath(directory)).mode & 0o777, 0o600);
+  const loaded = loadRegistry(directory);
+  assert.deepEqual(loaded.vaults.map((entry) => entry.name).sort(), ["default", "work"]);
+  assert.equal(loaded.vaults.find((entry) => entry.name === "work").path, join(directory, "work.enc"));
+
+  // A duplicate vault name is rejected rather than silently merged.
+  assert.throws(
+    () => saveRegistry(
+      { version: 1, vaults: [{ name: "work", path: "/a" }, { name: "work", path: "/b" }] },
+      directory,
+    ),
+    throwsCode("VAULT_INVALID"),
+  );
 });

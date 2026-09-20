@@ -30,7 +30,7 @@ try {
 process.stdout.write(`${JSON.stringify(headers)}\n`);
 if (headers.Authorization === undefined) {
   process.stderr.write(
-    "No BlindDrop session. Start one in the BlindDrop app or with " +
+    "No BlindDrop session. Unlock the BlindDrop app, or run " +
       "`blinddrop serve --http --allow CONNECTION --session-file ~/.config/blinddrop/session.json`.\n"
   );
 }

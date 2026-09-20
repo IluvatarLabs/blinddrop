@@ -119,11 +119,15 @@ after(async () => {
 function vaultFor() {
   const now = new Date().toISOString();
   return {
-    version: 1,
+    version: 2,
     createdAt: now,
     updatedAt: now,
     secrets: {
-      credential: { value: CREDENTIAL, enabled: true },
+      credential: {
+        type: "api-key",
+        fields: { value: { value: CREDENTIAL, label: "Value", masked: true, multiline: false } },
+        enabled: true,
+      },
     },
     connections: {
       service: {

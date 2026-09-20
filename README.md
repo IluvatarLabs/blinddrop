@@ -24,30 +24,37 @@ BlindDrop keeps the key in a local vault and makes requests on the agent's
 behalf. You unlock the helper once for a session. The agent can use the
 connections you allowed, but has no tool for reading their keys.
 
-The vault is a file you own. You can copy it, back it up, and move it to another
-computer. Closing the helper ends access for that session; saved keys remain
-in the vault. There is no subscription or hosted account to maintain.
+Each vault is a file you own, with its own passphrase and lock state. You can
+copy it, back it up, and move it to another computer. Locking a vault removes
+the connections that need it; locking every vault or quitting the helper ends
+the session. Saved keys remain encrypted in their vaults. There is no
+subscription or hosted account to maintain.
 
 ## Install
 
-Requirements: Node.js 22.13+ on the 22.x line, or 23.5+, and npm. Version 0.4.0
-has been tested on macOS; the runtime it extends was tested on Linux in 0.3.0.
-Windows is not verified.
+Requirements for the command-line package: Node.js 22.13+ on the 22.x line, or
+23.5+, and npm. Version 0.5.1 has been verified on macOS arm64; the earlier
+0.3.0 runtime was also tested on Linux. Windows is not verified.
 
-From this source checkout:
+Download `blinddrop-0.5.1.tgz` from the
+[v0.5.1 GitHub release](https://github.com/IluvatarLabs/blinddrop/releases/tag/v0.5.1),
+then install that file by its local path:
 
 ```sh
-npm ci
-npm pack
-npm install --global --prefix "$HOME/.local" ./blinddrop-0.4.0.tgz
+npm install --global --prefix "$HOME/.local" ./blinddrop-0.5.1.tgz
 export PATH="$HOME/.local/bin:$PATH"
 blinddrop --help
 ```
 
 This installs the command under your home directory on macOS and Linux.
-BlindDrop is not yet on npm; install the tarball by its path. Add
+BlindDrop is not published to the npm registry; install the GitHub release
+tarball by its path. Add
 `$HOME/.local/bin` to your shell's PATH to keep the command available in new
 terminals.
+
+The release also includes `BlindDrop-darwin-arm64-0.5.1.zip`, containing the
+macOS app. It is for macOS arm64 only and is unsigned and not notarized. See the
+[macOS app guide](https://github.com/IluvatarLabs/blinddrop/blob/v0.5.1/desktop/README.md) for its behavior and source-build steps.
 
 ## Quick start
 
@@ -67,10 +74,11 @@ Run `init` once to create the vault. Passphrases and keys are entered at hidden
 prompts. `github-pat` is the name of the saved key; `github` is the connection
 that uses it.
 
-From the same checkout, make a request with the included HTTP client:
+The installed package includes an HTTP client. With the user-local prefix
+above, make a request with:
 
 ```sh
-blinddrop run github -- node examples/request.mjs /user
+blinddrop run github -- node "$HOME/.local/lib/node_modules/blinddrop/examples/request.mjs" /user
 ```
 
 Unlock the vault when prompted. The command prints the HTTP status and your
@@ -83,10 +91,15 @@ For another API, use its HTTPS origin and authentication format. See the
 
 ## Running it
 
-- `blinddrop ui` opens an owner page in your browser to create or unlock the
-  vault, manage keys and connections, and start an agent session. The macOS app
-  in `desktop/` shows the same page in a window and ends every session when you
-  quit it. See the [configuration reference](CONFIGURATION.md#owner-gui).
+- `blinddrop ui` opens an owner page in your browser to create, open, unlock or
+  lock any of several vaults, and to manage typed multi-field secrets,
+  connection groups and static connection templates through the Connections,
+  Secrets and Activity views. Unlocking a vault starts or recomputes the
+  implicit agent session; locking every vault or quitting ends it. The macOS
+  app in `desktop/` shows the same page. Closing its main window leaves the app
+  and any unlocked session running from the menu bar; Quit ends the session.
+  See the
+  [configuration reference](CONFIGURATION.md#owner-gui).
 - The [BlindDrop plugin](plugin/README.md) for Claude Code adds a skill that
   steers the agent to the vault, a hook that refuses direct reads of `.env` and
   key files, and automatic attachment to a running session. The same skill
@@ -100,9 +113,11 @@ For another API, use its HTTPS origin and authentication format. See the
 - `blinddrop serve --allow CONNECTION` uses stdio for MCP clients that launch
   their own helper. See the [client setup](CONFIGURATION.md#agent-session).
 
-HTTP sessions last one hour by default; `--ttl SECONDS` changes that. Stopping
-or expiring the helper ends its session. A new session gets a new token. The
-MCP tools are `list_connections` and `execute_http`.
+Terminal sessions created by `serve` or `run` last one hour by default;
+`--ttl SECONDS` changes that. Stopping or expiring the helper ends its session.
+A new session gets a new token. The owner page and app instead recompute their
+implicit session as vaults and records change. The MCP tools are
+`list_connections` and `execute_http`.
 
 The [client guide](CLIENTS.md) covers MCP configuration, the Claude SDK,
 ordinary HTTP clients, and OAuth APIs. BlindDrop supports common API-key
@@ -112,22 +127,36 @@ WebSocket, gRPC, and browser login automation are outside this release.
 
 ## Your vault
 
-By default, BlindDrop keeps two files:
+BlindDrop's default configuration directory can contain the default encrypted
+vault and these owner-side files:
 
 ```text
 ~/.config/blinddrop/
-├── vault.enc               encrypted keys and connection settings
+├── vault.enc               default encrypted vault of secret values
+├── vaults.json             vault names and paths, never passphrases
+├── connections.json        origins, authentication settings and secret references
+├── groups.json             connection groups
+├── settings.json           owner page and app settings
 └── vault.enc.events.jsonl  request outcomes, without keys or request bodies
 ```
 
-While a session started from the owner page or the app is running with the
-session-file option on, a third file, `session.json`, holds that session's
-local URL and token at mode 0600 and is removed when the session ends.
+Other encrypted vault files may live anywhere you choose. Each has its own
+passphrase and lock state. A typed secret can hold several named fields, and a
+connection refers to the fields it needs as `vault#secret#field`.
+`connections.json` contains no stored secret values.
 
-Back up `vault.enc`. Its passphrase is required to restore it; there is no
-recovery bypass. Stop active helpers before replacing keys or changing the
-passphrase. `blinddrop passwd` re-encrypts the current vault; older backups
-still need their old passphrase.
+While a session started from the owner page or the app is running with the
+session-file option on, `session.json` holds that session's local URL and token
+at mode 0600 and is removed when the session ends.
+
+Back up every encrypted vault you need. The page's **Back up now…** action
+copies only the selected encrypted vault, not the separate connection or app
+configuration. To restore the complete app setup, retain `connections.json`,
+`vaults.json` (and adjust paths after moving machines), plus any wanted
+`groups.json` and `settings.json`. Each vault's passphrase is required to
+restore it; there is no recovery bypass. Stop active helpers before replacing
+keys or changing a passphrase. `blinddrop passwd` re-encrypts the selected
+vault; older backups still need their old passphrase.
 
 BlindDrop protects credentials through its own interfaces. Your agent harness
 and operating system must restrict access to the vault's unlock input and the
@@ -144,11 +173,11 @@ prevent an agent from misusing an action its key permits. See the
 
 - [Client guide](CLIENTS.md) — connect MCP hosts, SDKs, and HTTP clients
 - [Plugin](plugin/README.md) — Claude Code plugin and the portable skill for Codex and Cursor
-- [macOS app](desktop/README.md) — build the app that hosts the owner page
+- [macOS app](https://github.com/IluvatarLabs/blinddrop/blob/v0.5.1/desktop/README.md) — build the app that hosts the owner page
 - [Configuration](CONFIGURATION.md) — authentication, connections, backup, and limits
 - [Fly.io](FLY.md) — set up and use a Fly connection
 - [OAuth](OAUTH.md) — browser consent and saved refresh grants
-- [Contributing](CONTRIBUTING.md) — development and checks
+- [Contributing](https://github.com/IluvatarLabs/blinddrop/blob/v0.5.1/CONTRIBUTING.md) — development and checks
 - [Security](SECURITY.md) — reporting and trust boundaries
 - [Changelog](CHANGELOG.md) — release history
 

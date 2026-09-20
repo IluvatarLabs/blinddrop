@@ -14,12 +14,19 @@ of repository rules. Owner and client behavior is documented in
 - Every execution interface shares one broker and one validated HTTPS sender.
   Configured authentication overrides caller input; absolute targets, other
   authorities, redirects and metadata addresses are refused.
-- Owner unlock uses a hidden terminal prompt or an inherited descriptor. No
-  passphrase environment variable, plaintext cache or GUI bridge.
+- Owner unlock uses a hidden terminal prompt, an inherited descriptor, or the
+  authenticated owner-only loopback page hosted by the browser or macOS app.
+  No passphrase environment variable, plaintext cache or agent-visible unlock
+  or administration route.
+- Each vault is an encrypted file with its own passphrase and lock state. A
+  connection enters the running session only while every vault holding its
+  referenced secret fields is unlocked; locking a vault removes exactly its
+  dependent connections.
 - Permissions and isolation belong to the agent harness and the OS. Document
   that assumption; do not build a sandbox, harness audit or unrestricted-mode
   detector.
-- No GUI, always-on daemon, hosted control plane, provider catalogue or
+- Keep the GUI to the owner-only loopback page and thin macOS shell. Do not add
+  an always-on daemon, hosted control plane, runtime provider catalogue or
   extension framework. Keep BlindDrop a local vault and helper.
 
 ## Working method
@@ -43,8 +50,10 @@ of repository rules. Owner and client behavior is documented in
 - `npm run check`, `npm test`, `npm pack` and `npm run check:package` are the
   release gate. Live provider checks are recorded separately from controlled
   receivers; a recipe is not live-account proof.
-- Before publishing, inspect the tarball contents. Public artifacts must not
-  contain credentials, vault archives, local paths or private material.
+- Before publishing, inspect the tarball and any app archive. Public artifacts
+  must not contain credentials, vault archives, local paths or private
+  material. Describe an app's architecture, signing and notarization state
+  exactly as built.
 
 ## Git discipline
 

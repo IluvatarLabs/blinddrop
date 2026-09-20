@@ -1,5 +1,69 @@
 # Changelog
 
+## [0.5.1] - 2026-09-20
+
+### Added
+
+- Multiple vaults: each is an encrypted file with its own passphrase and lock state, listed in a `~/.config/blinddrop/vaults.json` registry that stores names and paths only, never a passphrase. The `default` vault initially uses `~/.config/blinddrop/vault.enc`; its first-use location can be chosen. Every vault reuses the existing scrypt + AES-GCM envelope; no new cryptography.
+- Owner vault routes `vault/create`, `vault/open`, `vault/unlock`, `vault/lock` and `vault/remove`; `state` and `list` now report every vault and its lock state.
+- Least-privilege unlock and cross-vault session eligibility: unlocking one vault decrypts only that vault, and a connection is in the session only while every vault holding its referenced secrets is unlocked. Locking a vault drops just its dependent connections.
+- Typed multi-field secrets: a secret has a type and named fields — a default set per type plus unlimited custom fields — each field carrying a label and masked/multiline flags. Owner routes `secret/set` (typed, multi-field), `secret/field/remove` and `secret/import-env`.
+- Connection templates: a static, client-side prefill of a connection and its secret in the owner page, with Custom as the fallback. No runtime provider code and no provider catalogue; a provider needing an unsupported mechanism is flagged, not faked.
+
+### Changed
+
+- Connection references are vault-qualified `vault#secret#field`. `secret#field` and a bare `secret` resolve in the default vault, and a bare reference resolves to a secret's `value` field or its sole field.
+- The archive payload schema version is `2`. Loading a version `1` archive migrates it in memory — single-value secrets become typed `api-key` secrets and connection references gain the default field — through a one-version-back read path, with the atomic writer preserved. Existing two-secret patterns stay valid and are not force-merged.
+
+### Fixed
+
+- Restored Unlock on populated startup and after locking the last vault. Operational listings, Activity, connection edits and Groups require an unlocked vault; secret changes still require their target vault.
+- Restored the original Forgot-passphrase explanation and Open-a-backup action.
+- Removed the unintended 64-field count cap from typed secrets; existing request/archive/value byte limits remain.
+- Connections now live outside the vaults in owner-only configuration. Locking a vault with no referenced secret no longer removes a usable connection; connections with locked references remain visible with missing-reference details while another vault is unlocked.
+- Legacy connections are qualified against their source vault before migration, preventing a same-named default secret from being used instead. Name collisions preserve both definitions.
+- Migration collision names remain valid when truncating a long vault name at punctuation.
+- Creating a field-less connection reference requires its vault unlocked so the correct field can be resolved; explicit field references remain editable while their vault is locked and another vault is unlocked.
+- Activity and Last used read the same fixed log written by the owner session, including sessions with the default vault locked.
+- The connection editor selects and preserves custom secret fields. Editing labels keeps stored values and stable field IDs; inline value replacement preserves sibling fields.
+- First-vault creation accepts a chosen location, and the owner server honors an explicit `--vault` path.
+- Backups now document the separate connection configuration required alongside encrypted vaults.
+
+### Removed
+
+- Kinds, the auto-bucketing of connections by authentication type, from the owner page; Search and Groups cover the need. Groups stay on connections and secrets are not grouped.
+- Some of the owner page's in-app manual prose, and the connection counts in the status footer during an active session, as part of the information-architecture cleanup.
+
+Verification: type check, the functional suite and clean-install package checks
+pass on macOS arm64. Browser and native-app checks cover populated Unlock,
+per-vault locking, templates, custom fields and the owner layout. Windows/Linux
+0.5.x workflows and new live-provider account checks remain unverified. The
+macOS build is unsigned and not notarized.
+
+## [0.5.0] - unreleased
+
+### Added
+
+- Owner routes `vault/open`, `activity`, `activity/clear`, `secret/set-many`, `secret/enable`, `connection/enable`, `connection/remove`, `groups`, `settings` and `vault/backup`.
+- Owner settings in `~/.config/blinddrop/settings.json` at mode 0600: appearance, session port, session file, lock on sleep, lock on screen lock, open at login, the last and recent vaults, the last backup time, and the page's own view state.
+- Connection groups in a `<vault-path>.gui.json` sidecar at mode 0600 beside the archive. The archive does not store them and agents never see them.
+- The owner page rebuilt from the owner's design: a welcome screen, an unlock screen, the vault window with its sidebar, list or table and detail pane, the secrets and activity views, and a settings window with the General, Security, Sessions, Vault and Advanced tabs.
+- macOS app: a preload bridge for file dialogs, Reveal in Finder and the sleep and screen-lock handlers; the native application menu; a separate settings window; a window size per screen; and a vault chosen from `--vault`, then the last vault, then the default path.
+
+### Changed
+
+- The agent session is implicit: unlocking the owner page starts it over every enabled connection whose referenced secrets are present and enabled, every owner write to the archive restarts it from the new snapshot, and locking or quitting ends it.
+- The session file is always written to `~/.config/blinddrop/session.json` instead of beside the archive, so a plugin finds it wherever the vault file lives.
+- The owner listener accepts request bodies up to 1 MiB instead of 64 KiB, so a PEM value fits.
+- `connection/import` accepts a `secrets` object, storing a new connection's values and its definition in one write.
+- Version 0.5.0.
+
+### Removed
+
+- The `session/start` and `session/stop` routes, and the session controls in the owner page.
+
+Verification: recorded in the 0.5 verification record before release.
+
 ## [0.4.0] - unreleased
 
 - Owner GUI: `blinddrop ui` serves an owner-only page on an authenticated loopback listener to create or unlock the vault, manage secrets and connections, change the passphrase, and start or stop agent sessions; the passphrase is held in that process's memory only.
@@ -44,3 +108,4 @@ Windows, interactive Linux terminal prompts, desktop browser launch on any
 platform, and live Anthropic, GitHub and Google accounts.
 
 [0.3.0]: https://github.com/IluvatarLabs/blinddrop/releases/tag/v0.3.0
+[0.5.1]: https://github.com/IluvatarLabs/blinddrop/releases/tag/v0.5.1

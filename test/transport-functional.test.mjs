@@ -13,6 +13,14 @@ import { ca, owner, session } from './support/owner-session.mjs';
 const cert = await readFile(ca, 'utf8');
 const key = await readFile(new URL('./fixtures/localhost-key.pem', import.meta.url), 'utf8');
 
+function fieldSecret(value) {
+  return {
+    type: 'api-key',
+    fields: { value: { value, label: 'Value', masked: true, multiline: false } },
+    enabled: true,
+  };
+}
+
 async function fixture(t, handler, tls = {}) {
   const server = createServer({ cert, key, ...tls }, handler);
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
@@ -82,7 +90,7 @@ test('HTTPS response semantics: discarded cookie does not suppress a safe result
     res.end('usable response');
   });
   const now = new Date().toISOString();
-  const broker = new Broker({ version: 1, createdAt: now, updatedAt: now, secrets: { token: { value: secret, enabled: true } },
+  const broker = new Broker({ version: 2, createdAt: now, updatedAt: now, secrets: { token: fieldSecret(secret) },
     connections: { receiver: { origin, auth: { type: 'bearer', secret: 'token' }, allowPrivate: true, enabled: true } } },
     { id: 'http-semantics', connections: ['receiver'], expiresAt: Date.now() + 30000 }, { logPath: join(dir, 'events.jsonl') });
   t.after(() => broker.close());
@@ -106,7 +114,7 @@ test('grant expiry aborts a delayed OAuth issuer and prevents the resource opera
     } else { resourceCalls++; res.end('should not run'); }
   });
   const now = new Date().toISOString();
-  const broker = new Broker({ version: 1, createdAt: now, updatedAt: now, secrets: { refresh: { value: randomBytes(24).toString('hex'), enabled: true } },
+  const broker = new Broker({ version: 2, createdAt: now, updatedAt: now, secrets: { refresh: fieldSecret(randomBytes(24).toString('hex')) },
     connections: { receiver: { origin, auth: { type: 'oauth2', tokenEndpoint: origin + '/token', grant: 'refresh_token', clientId: 'public-client', clientAuth: 'none', refreshSecret: 'refresh' }, allowPrivate: true, enabled: true } } },
     { id: 'expiry', connections: ['receiver'], expiresAt: Date.now() + 150 }, { logPath: join(dir, 'events.jsonl') });
   t.after(() => broker.close());

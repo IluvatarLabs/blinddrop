@@ -40,6 +40,17 @@ you replace/remove it; stopping the helper does not erase it. The provider
 can expire/revoke a key independently. Owner commands ask for the archive
 passphrase; the helper asks once for its lifetime.
 
+Since 0.5.1 a secret can hold more than one named field, and a connection
+reference can name a vault and a field as `vault#secret#field`. These
+single-value recipes still work unchanged: `secret set NAME` stores one value,
+and a bare `--secret NAME` resolves to it. When a credential has several parts
+— an AWS access-key id and secret, a client id and secret, a certificate and
+its key — build a typed multi-field secret in the owner page's field editor, or
+pick a connection template that shapes both the connection and its secret for
+you. Keep unrelated secrets in separate vaults and unlock only the one a task
+needs; a connection is usable only while every vault holding its referenced
+fields is unlocked.
+
 ## Run an HTTP client
 
 From this checkout, this is a complete read through an existing connection:
@@ -176,7 +187,7 @@ this endpoint is for local clients, not a webpage API.
 
 ## Claude Code plugin
 
-Install the plugin from the `plugin/` directory: `claude --plugin-dir /path/to/plugin` for a local checkout, or add the repository as a marketplace as the [plugin README](plugin/README.md) describes. It registers the BlindDrop MCP server at `http://127.0.0.1:8787/mcp` with a headers helper that reads `~/.config/blinddrop/session.json`, ships a skill that tells the agent to use `list_connections` and `execute_http` instead of reading keys, and adds a hook that refuses direct reads of `.env`, key files and the vault directory with a reason pointing at the tool. Start a session with the session file on, from the owner page, the app, or `blinddrop serve --http --allow CONNECTION --port 8787 --session-file ~/.config/blinddrop/session.json`, and Claude Code connects on its next request. The same skill folder installs into Codex and Cursor by copying; the README lists the paths. Hooks and permission rules steer the model; they are not a security boundary, as [SECURITY.md](SECURITY.md) explains.
+Install the plugin from the `plugin/` directory: `claude --plugin-dir /path/to/plugin` for a local checkout, or add the repository as a marketplace as the [plugin README](plugin/README.md) describes. It registers the BlindDrop MCP server at `http://127.0.0.1:8787/mcp` with a headers helper that reads `~/.config/blinddrop/session.json`, ships a skill that tells the agent to use `list_connections` and `execute_http` instead of reading keys, and adds a hook that refuses direct reads of `.env`, key files and the vault directory with a reason pointing at the tool. Unlock the BlindDrop app, or the owner page, with the session file left on; alternatively run `blinddrop serve --http --allow CONNECTION --port 8787 --session-file ~/.config/blinddrop/session.json`. Claude Code connects on its next request. The same skill folder installs into Codex and Cursor by copying; the README lists the paths. Hooks and permission rules steer the model; they are not a security boundary, as [SECURITY.md](SECURITY.md) explains.
 
 ## What fits, and what does not
 
@@ -216,6 +227,10 @@ blinddrop passwd
 `passwd` asks for the old passphrase and the new passphrase twice, then
 atomically re-encrypts the archive. Secrets and connection references stay
 the same. Existing encrypted backups still need their old passphrase.
-Copy the encrypted archive for backup; there is no recovery bypass if its
-passphrase is lost. Disable/remove commands and trusted inherited-input
+Copy the encrypted archive to back up its secrets; there is no recovery bypass
+if its passphrase is lost. A complete app setup also needs `connections.json`
+and `vaults.json`, plus any wanted groups and settings. A standalone CLI archive
+needs its `.connections.json` sidecar. See the backup instructions in
+[CONFIGURATION.md](CONFIGURATION.md#replace-disable-and-back-up).
+Disable/remove commands and trusted inherited-input
 descriptors are documented in [CONFIGURATION.md](CONFIGURATION.md#replace-disable-and-back-up).

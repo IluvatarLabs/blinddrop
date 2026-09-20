@@ -1,7 +1,7 @@
 {
   "name": "blinddrop-desktop",
   "productName": "BlindDrop",
-  "version": "0.4.0",
+  "version": "0.5.1",
   "private": true,
   "type": "module",
   "main": "main.mjs",
@@ -17,6 +17,6 @@
     "electron": "44.4.1"
   },
   "dependencies": {
-    "blinddrop": "file:vendor/blinddrop-0.4.0.tgz"
+    "blinddrop": "file:vendor/blinddrop-0.5.1.tgz"
   }
 }

@@ -5,17 +5,17 @@ license: PolyForm-Noncommercial-1.0.0
 compatibility: Requires the blinddrop executable installed locally and a session the owner has started; the agent host must support MCP over HTTP, or the work must run under `blinddrop run`.
 metadata:
   component: agent-credential-use
-  version: "0.4.0"
+  version: "0.5.1"
 ---
 
 # BlindDrop: use credentials you are not allowed to read
 
 ## How it works, and what you never see
 
-The owner keeps secrets in a local encrypted archive (`~/.config/blinddrop/vault.enc`),
-unlocks it once in their own terminal or in the BlindDrop app, and authorizes an
-exact list of **connections** for the session. A connection binds one HTTPS origin
-to one stored credential and one authentication format.
+The owner keeps secrets in one or more local encrypted vaults, unlocks the ones a
+task needs in their own terminal or in the BlindDrop app, and authorizes an exact
+list of **connections** for the session. A connection binds one HTTPS origin to
+the stored secret fields it uses and one authentication format.
 
 You send an ordinary HTTPS request naming a connection. BlindDrop adds the
 configured authentication inside its own process, sends it to that origin, checks
@@ -115,22 +115,32 @@ Other formats are `--auth header --secret KEY_REF --field X-Api-Key`,
 `--allow-private` for a private or localhost HTTPS API. The value is typed at
 the hidden prompt `secret set` opens; it is never a command argument.
 
-Changing the archive requires a new session: the owner stops the running
-session, makes the change, and starts a new one.
+For a credential with several parts (an AWS key pair, a client id and secret) or
+to keep it in a separate vault, tell the owner to build a typed multi-field
+secret or pick a connection template in the BlindDrop app instead; a reference can
+name a vault and field as `vault#secret#field`. A single-value key still works
+exactly as shown above.
+
+Changing the archive requires a new session. In the BlindDrop app that happens
+by itself: an owner change restarts the session. With a terminal session, the
+owner stops it, makes the change, and starts a new one.
 
 ## When no BlindDrop session is attached
 
 If your tool list has no BlindDrop tools, no session is reachable. Ask the owner
-to start one in their own terminal:
+to unlock the BlindDrop app: while a vault is unlocked a session runs, and it
+writes the session file this plugin reads automatically. Locking every vault or
+quitting the app ends that session.
+
+The owner can instead start one in their own terminal:
 
 ```sh
 blinddrop serve --http --allow work-api --ttl 3600
 ```
 
 It prints one JSON line with `mcpUrl`, `connections`, `token` and `expiresAt`,
-and keeps running. The owner then either starts the session from the BlindDrop
-app, which writes the session file this plugin reads automatically, or attaches
-the host by hand with the printed values, for example:
+and keeps running. The host is then attached by hand with the printed values,
+for example:
 
 ```sh
 claude mcp add --transport http blinddrop MCP_URL --header "Authorization: Bearer SESSION_TOKEN"

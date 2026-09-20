@@ -2,8 +2,12 @@
 
 A thin Electron shell around the BlindDrop owner interface. The app starts the
 same owner server the `blinddrop ui` command starts, in its own main process, and
-shows the same page in a window. It adds no capability of its own: everything
-the app can do, the command-line runtime can already do.
+shows the same page in a native window. The shell adds no separate secret store
+or archive: the embedded owner server owns vault operations and holds unlocked
+passphrases in memory, exactly as in the browser workflow. What the app adds is
+the macOS around it — the window and its
+sizes, the application menu, native file dialogs, Reveal in Finder, Move to
+Trash, Open at login, and locking when the Mac sleeps or the screen locks.
 
 macOS only. Linux and Windows owners use `blinddrop ui` and their browser.
 
@@ -35,9 +39,14 @@ npm run make      # build a distributable .app
 
 `npm run vendor` writes `vendor/blinddrop-<version>.tgz`. `npm install` then
 installs that tarball as the `blinddrop` dependency, so the app always hosts a
-packed copy of the runtime rather than the working tree. After changing anything
-under `src/`, run `npm run vendor` and `npm install` again; the app will not see
-the change otherwise.
+packed copy of the runtime rather than the working tree. After changing the
+runtime or owner page without changing its version, explicitly refresh the local
+tarball dependency; an ordinary install can retain the previous copy:
+
+```sh
+npm run vendor
+npm install --force ./vendor/blinddrop-0.5.1.tgz
+```
 
 `package-lock.json` is not committed. The only entry under `dependencies` is the
 vendored tarball, and npm records an integrity hash for it; `npm run vendor`
@@ -56,11 +65,23 @@ rather than from an install script, so nothing is downloaded during
 and a zip of it at
 `out/make/zip/darwin/<arch>/BlindDrop-darwin-<arch>-<version>.zip`.
 
-### Choosing an archive
+### Which archive the app opens
 
-The app administers the default archive. To point it at another one, pass
-`--vault <path>`, mirroring the runtime's global option. From source, the
-argument goes after a second `--`, because the first one belongs to npm:
+Nothing has to exist before the first launch. The app picks a vault in this
+order:
+
+1. `--vault <path>`, mirroring the runtime's global option.
+2. `lastVault` from the settings file, which the owner page records whenever a
+   vault is created or unlocked.
+3. `~/.config/blinddrop/vault.enc`, the runtime's default path.
+
+The page, not the app, decides what to show: the unlock screen when that file
+exists, the welcome screen when it does not. From the welcome screen the owner
+creates a vault anywhere, or opens an existing one, and `File › Open vault…`
+(⌘O) does the same later.
+
+From source, the argument goes after a second `--`, because the first one
+belongs to npm:
 
 ```sh
 npm start -- -- --vault <path>
@@ -73,20 +94,43 @@ open out/BlindDrop-darwin-<arch>/BlindDrop.app --args --vault <path>
 ```
 
 `--vault` without a usable value is refused rather than ignored, so a mistyped
-option cannot quietly open the default archive instead.
+option cannot quietly open another archive instead.
+
+### The settings file
+
+Settings live at `<config dir>/settings.json` with mode 0600, where
+`<config dir>` is the directory of the default vault path
+(`~/.config/blinddrop`). The owner server owns that file; the app reads it once
+at start, for `lastVault` only, and never writes it. It also holds the
+appearance, the session port and session-file switches, the recent vaults, the
+last backup time, and the three macOS switches the app acts on: Open at login,
+Lock when the Mac sleeps and Lock when the screen locks.
 
 ## Running the built app
 
 Launch `BlindDrop.app` from Finder, or with `open` from a terminal. The build is
 unsigned and is not notarized: it is meant to run on the machine that built it.
-macOS Gatekeeper will refuse an unsigned bundle that has been downloaded or
-copied from elsewhere.
+Downloaded builds can be blocked by macOS Gatekeeper. Signing and notarization
+are not provided by this build process.
 
 ## What the app does
 
 On launch the app starts the owner server on a loopback port with a fresh
-one-time token, then loads that page in a single window. The window cannot
-navigate away from the owner server's origin and cannot open new windows.
+one-time token, then loads that page in its main window. Neither window can
+navigate away from the owner server's origin, and neither can open a new one.
+
+The window uses the macOS unified toolbar (`hiddenInset`): the real traffic
+lights sit over the titlebar the page draws. The app owns the window size and
+sets it from the screen the page names — welcome 760×560, unlock 460×520,
+vault 1236×818 (resizable, minimum 980×640) — re-centring on each change.
+
+`Settings…` (⌘,) opens a second 720×470 window on the same owner server. It has
+no parent: ⌘W closes it and nothing else changes, and closing the main window
+closes it too while the app remains available in the menu bar.
+
+The application menu is the only App, File, Edit, View, Window and Help menu;
+the page draws no menu bar of its own in the app. Menu items that are not
+standard macOS roles send a named command to the focused page.
 
 If the packed runtime has no built owner server, the window opens empty with the
 title `BlindDrop runtime not built`; run `npm run vendor` and `npm install` again
@@ -94,13 +138,22 @@ after building the runtime.
 
 ## Security
 
-Quitting the app ends every agent session. The passphrase lives only in the
-app's main process memory, the agent session listener dies with the process, and
-the session file it wrote is deleted. There is no daemon, no login item, and no
-launch agent: the vault is reachable only while the owner has the app open.
+Unlocking a vault starts or recomputes the agent session. Locking a vault removes
+the connections that need it; locking every vault or quitting ends agent access.
+The passphrase is held by the owner server in the app's main process memory,
+the agent session listener dies with the process, and the session file it wrote
+is deleted. There is no daemon and no launch agent: the vault is reachable only
+while the owner has the app running and the required vaults unlocked. Open at login, when the owner
+turns it on in Settings, starts the app locked like any other launch.
 
-Closing the window quits the app, so closing the window also ends every session.
+Closing the main window leaves the app and unlocked session running. Use the
+menu-bar icon to reopen the window or quit the app; Quit ends the session.
 
-The window runs with context isolation on, Node integration off, and the
-renderer sandbox on. It has no preload script and no privileged bridge; the page
-talks to the owner server over loopback HTTP exactly as the browser does.
+Both windows run with context isolation on, Node integration off, and the
+renderer sandbox on. The page reaches the owner server over loopback HTTP
+exactly as the browser does. The preload script adds one bridge,
+`window.desktop`, and nothing else: the platform name, the file dialogs for
+choosing a vault, the path of a dropped file, Reveal in Finder, Move to Trash,
+the screen size and settings-window calls, the menu-command subscription, and
+the three macOS switches above. No `ipcRenderer`, `require` or arbitrary channel
+is exposed, and every path the bridge acts on must be absolute.

@@ -192,7 +192,7 @@ test("real owner CLI and MCP session keep credentials out of the agent interface
     [`${passphrase}\n`, `${whitespaceSecret}\n`],
     forbidden
   );
-  assert.equal(loadVault(vaultPath, passphrase).secrets["whitespace-token"].value, whitespaceSecret);
+  assert.equal(loadVault(vaultPath, passphrase).secrets["whitespace-token"].fields.value.value, whitespaceSecret);
   await expectCliSuccess(
     [
       "--vault",

@@ -21,18 +21,32 @@ const limits = {
   concurrency: 4,
 };
 
+function fieldSecret(value) {
+  return {
+    type: "api-key",
+    fields: { value: { value, label: "Value", masked: true, multiline: false } },
+    enabled: true,
+  };
+}
+
 function vault(values) {
   const now = new Date().toISOString();
   return {
-    version: 1,
+    version: 2,
     createdAt: now,
     updatedAt: now,
     secrets: Object.fromEntries(Object.entries(values).map(([name, value]) => [
       name,
-      { value, enabled: true },
+      fieldSecret(value),
     ])),
     connections: {},
   };
+}
+
+/** Every stored field value, for the credential-absence scan. */
+function secretValues(data) {
+  return Object.values(data.secrets).flatMap((entry) =>
+    Object.values(entry.fields).map((field) => field.value));
 }
 
 function connection(origin, auth) {
@@ -71,7 +85,7 @@ async function clientFor(t, data, configured, generatedCredentials = () => []) {
       if (client) {
         const traffic = await client.close();
         const visible = JSON.stringify(traffic) + await readFile(archive + '.events.jsonl', 'utf8');
-        for (const value of [passphrase, ...Object.values(data.secrets).map(entry => entry.value), ...generatedCredentials()]) {
+        for (const value of [passphrase, ...secretValues(data), ...generatedCredentials()]) {
           if (value) assert.equal(visible.includes(value), false, 'credential absent from MCP traffic, stderr and use log');
         }
       }
@@ -81,7 +95,7 @@ async function clientFor(t, data, configured, generatedCredentials = () => []) {
   });
   await owner(archive, passphrase, ['init']);
   for (const [name, entry] of Object.entries(data.secrets)) {
-    await owner(archive, passphrase, ['secret', 'set', name, '--secret-fd', '4'], entry.value);
+    await owner(archive, passphrase, ['secret', 'set', name, '--secret-fd', '4'], entry.fields.value.value);
   }
   const definition = join(directory, 'connection.json');
   await writeFile(definition, JSON.stringify(configured));
@@ -319,7 +333,7 @@ test('JWT bearer sends a verified short-lived RS256 assertion to the fixed token
   assert.ok(result.patterns.includes(assertionSeen.split('.')[2]), 'actual assertion signature is protected');
 
   const wrongPair = await generateKeyPair('RS256', { extractable: true });
-  data.secrets.wrongSigningKey = { value: await exportPKCS8(wrongPair.privateKey), enabled: true };
+  data.secrets.wrongSigningKey = fieldSecret(await exportPKCS8(wrongPair.privateKey));
   const invalid = connection(fixture.origin, {
     ...configured.auth,
     privateKeySecret: 'wrongSigningKey',

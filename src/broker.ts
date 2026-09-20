@@ -10,7 +10,12 @@ import { TextDecoder } from "node:util";
 
 import { AuthSession } from "./auth.js";
 import { BlindDropError, type ErrorCode } from "./errors.js";
-import { connectionSecretNames } from "./references.js";
+import {
+  connectionResolvable,
+  normalizeSnapshot,
+  qualifyConnection,
+  type SessionSnapshot,
+} from "./references.js";
 import { awaitAbortable, streamFilteredResponse } from "./stream.js";
 import { sendHttps, sendHttpsStreaming } from "./transport.js";
 import type {
@@ -30,7 +35,7 @@ import type {
   TransportResponse,
   VaultData,
 } from "./types.js";
-import { validateConnection } from "./vault.js";
+import { validateConnection, validateSecret } from "./vault.js";
 
 export const DEFAULT_LIMITS: Limits = Object.freeze({
   requestBytes: 1024 * 1024,
@@ -127,49 +132,72 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
-function cloneVault(vault: VaultData): VaultData {
-  let cloned: VaultData;
+interface ClonedSession {
+  snapshot: SessionSnapshot;
+  connections: Map<string, Connection>;
+}
+
+/**
+ * Deep-clones and re-validates the unlocked vault set for one session, and
+ * validates the independent connection configuration (or legacy embedded records).
+ * A duplicate legacy connection name is a conflict, because the
+ * grant and every agent request address a connection by name alone. Only the
+ * cloned copy is mutated afterward, so the caller's vaults are never touched.
+ */
+function cloneSnapshot(source: VaultData | SessionSnapshot): ClonedSession {
+  const input = normalizeSnapshot(source);
+  let cloned: SessionSnapshot;
   try {
-    cloned = structuredClone(vault);
+    cloned = structuredClone(input);
   } catch {
     throw new BlindDropError("INVALID_INPUT");
   }
-  if (
-    !cloned ||
-    cloned.version !== 1 ||
-    typeof cloned.createdAt !== "string" ||
-    typeof cloned.updatedAt !== "string" ||
-    !isRecord(cloned.secrets) ||
-    !isRecord(cloned.connections)
-  ) {
+  if (typeof cloned.defaultVault !== "string" || !(cloned.vaults instanceof Map)) {
     throw new BlindDropError("INVALID_INPUT");
   }
 
-  const secrets = Object.create(null) as Record<string, Secret>;
-  for (const [name, secret] of Object.entries(cloned.secrets)) {
+  const vaults = new Map<string, VaultData>();
+  const connections = new Map<string, Connection>();
+  for (const [vaultName, vault] of cloned.vaults) {
     if (
-      !isRecord(secret) ||
-      Object.keys(secret).length !== 2 ||
-      typeof secret.value !== "string" ||
-      secret.value.length === 0 ||
-      typeof secret.enabled !== "boolean"
+      !vault ||
+      vault.version !== 2 ||
+      typeof vault.createdAt !== "string" ||
+      typeof vault.updatedAt !== "string" ||
+      !isRecord(vault.secrets) ||
+      !isRecord(vault.connections)
     ) {
       throw new BlindDropError("INVALID_INPUT");
     }
-    secrets[name] = { value: secret.value, enabled: secret.enabled };
-  }
 
-  const connections = Object.create(null) as Record<string, Connection>;
-  for (const [name, connection] of Object.entries(cloned.connections)) {
-    connections[name] = validateConnection(connection);
+    const secrets = Object.create(null) as Record<string, Secret>;
+    for (const [name, secret] of Object.entries(vault.secrets)) {
+      secrets[name] = validateSecret(secret);
+    }
+
+    const vaultConnections = Object.create(null) as Record<string, Connection>;
+    for (const [name, connection] of Object.entries(cloned.connections === undefined ? vault.connections : {})) {
+      const validated = qualifyConnection(vault, vaultName, validateConnection(connection));
+      vaultConnections[name] = validated;
+      if (connections.has(name)) {
+        throw new BlindDropError("INVALID_INPUT");
+      }
+      connections.set(name, validated);
+    }
+
+    vaults.set(vaultName, {
+      version: 2,
+      createdAt: vault.createdAt,
+      updatedAt: vault.updatedAt,
+      secrets,
+      connections: vaultConnections,
+    });
   }
-  return {
-    version: 1,
-    createdAt: cloned.createdAt,
-    updatedAt: cloned.updatedAt,
-    secrets,
-    connections,
-  };
+  if (cloned.connections !== undefined) {
+    if (!isRecord(cloned.connections)) throw new BlindDropError("INVALID_INPUT");
+    for (const [name, connection] of Object.entries(cloned.connections)) connections.set(name, validateConnection(connection));
+  }
+  return { snapshot: { defaultVault: cloned.defaultVault, vaults }, connections };
 }
 
 function mergeLimits(
@@ -279,7 +307,8 @@ function withoutSetCookie(rawFields: readonly string[]): string[] {
 }
 
 export class Broker {
-  private vault: VaultData | null;
+  private snapshot: SessionSnapshot | null;
+  private connections: Map<string, Connection> | null;
   private grant: Grant | null;
   private readonly limits: Limits;
   private readonly streamLimits: Limits;
@@ -290,7 +319,7 @@ export class Broker {
   private closed = false;
 
   constructor(
-    vault: VaultData,
+    source: VaultData | SessionSnapshot,
     grant: Grant,
     options: {
       logPath: string;
@@ -301,8 +330,9 @@ export class Broker {
   ) {
     let descriptor: number | undefined;
     try {
-      const snapshot = cloneVault(vault);
-      this.vault = snapshot;
+      const cloned = cloneSnapshot(source);
+      this.snapshot = cloned.snapshot;
+      this.connections = cloned.connections;
       this.grant = {
         id: grant.id,
         connections: [...grant.connections],
@@ -311,7 +341,7 @@ export class Broker {
       this.grantId = grant.id;
       this.limits = mergeLimits(DEFAULT_LIMITS, options.limits);
       this.streamLimits = mergeLimits(STREAM_LIMITS, options.streamLimits);
-      this.auth = new AuthSession(snapshot, {
+      this.auth = new AuthSession(cloned.snapshot, {
         persistSecret: options.persistSecret,
       });
       if (!options.logPath || hasControls(options.logPath)) {
@@ -341,16 +371,11 @@ export class Broker {
 
   listConnections(): ConnectionMetadata[] {
     this.assertSession();
-    const vault = this.requireVault();
+    const connections = this.requireConnections();
     const grant = this.requireGrant();
     return grant.connections.flatMap((name) => {
-      const connection = Object.hasOwn(vault.connections, name)
-        ? vault.connections[name]
-        : undefined;
-      if (
-        !connection?.enabled ||
-        !this.connectionSecretsEnabled(connection, vault.secrets)
-      ) {
+      const connection = connections.get(name);
+      if (!connection?.enabled || !this.connectionSecretsEnabled(connection)) {
         return [];
       }
       return [{ name, origin: connection.origin, authType: connection.auth.type }];
@@ -466,13 +491,18 @@ export class Broker {
     this.active.clear();
     this.auth.close();
 
-    if (this.vault) {
-      for (const secret of Object.values(this.vault.secrets)) {
-        secret.value = "";
-        secret.enabled = false;
+    if (this.snapshot) {
+      for (const vault of this.snapshot.vaults.values()) {
+        for (const secret of Object.values(vault.secrets)) {
+          for (const field of Object.values(secret.fields)) {
+            field.value = "";
+          }
+          secret.enabled = false;
+        }
       }
     }
-    this.vault = null;
+    this.snapshot = null;
+    this.connections = null;
     this.grant = null;
 
     if (this.logFd !== null) {
@@ -789,7 +819,7 @@ export class Broker {
   }
 
   private assertSession(): void {
-    if (this.closed || !this.grant || !this.vault) {
+    if (this.closed || !this.grant || !this.snapshot || !this.connections) {
       throw new BlindDropError("SESSION_CLOSED");
     }
     if (
@@ -889,15 +919,16 @@ export class Broker {
 
   private authorizedConnection(name: string): Connection {
     const grant = this.requireGrant();
-    const vault = this.requireVault();
+    const connections = this.requireConnections();
     if (!grant.connections.includes(name)) {
       throw new BlindDropError("ACCESS_DENIED");
     }
-    const connection = Object.hasOwn(vault.connections, name)
-      ? vault.connections[name]
-      : undefined;
+    const connection = connections.get(name);
     if (!connection?.enabled) {
       throw new BlindDropError("CONNECTION_NOT_FOUND");
+    }
+    if (!this.connectionSecretsEnabled(connection)) {
+      throw new BlindDropError("SECRET_NOT_FOUND");
     }
     return connection;
   }
@@ -1003,27 +1034,30 @@ export class Broker {
     return safe;
   }
 
-  private connectionSecretsEnabled(
-    connection: Connection,
-    secrets: Record<string, Secret>,
-  ): boolean {
-    return connectionSecretNames(connection).every(
-      (name) => Object.hasOwn(secrets, name) && Boolean(secrets[name]?.enabled),
-    );
+  private connectionSecretsEnabled(connection: Connection): boolean {
+    const snapshot = this.requireSnapshot();
+    return connectionResolvable(connection, snapshot.vaults, snapshot.defaultVault);
   }
 
   private knownConnectionName(inputName: unknown): string | null {
-    if (typeof inputName !== "string" || !this.vault) {
+    if (typeof inputName !== "string" || !this.connections) {
       return null;
     }
-    return Object.hasOwn(this.vault.connections, inputName) ? inputName : null;
+    return this.connections.has(inputName) ? inputName : null;
   }
 
-  private requireVault(): VaultData {
-    if (!this.vault) {
+  private requireSnapshot(): SessionSnapshot {
+    if (!this.snapshot) {
       throw new BlindDropError("SESSION_CLOSED");
     }
-    return this.vault;
+    return this.snapshot;
+  }
+
+  private requireConnections(): Map<string, Connection> {
+    if (!this.connections) {
+      throw new BlindDropError("SESSION_CLOSED");
+    }
+    return this.connections;
   }
 
   private requireGrant(): Grant {

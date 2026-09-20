@@ -1,6 +1,35 @@
-export interface Secret {
+export interface Field {
   value: string;
+  label: string;
+  masked: boolean;
+  multiline: boolean;
+}
+
+export interface Secret {
+  type: string;
+  fields: Record<string, Field>;
   enabled: boolean;
+}
+
+/**
+ * A parsed vault-qualified secret reference: `vault#secret#field`. A missing
+ * vault resolves to the session's default vault; a missing field resolves to
+ * the secret's default field. See `src/references.ts`.
+ */
+export interface SecretRef {
+  vault: string;
+  secret: string;
+  field?: string;
+}
+
+export interface VaultRegistryEntry {
+  name: string;
+  path: string;
+}
+
+export interface VaultRegistry {
+  version: 1;
+  vaults: VaultRegistryEntry[];
 }
 
 export type SecretBinding =
@@ -33,7 +62,7 @@ export interface Connection {
 }
 
 export interface VaultData {
-  version: 1;
+  version: 2;
   createdAt: string;
   updatedAt: string;
   secrets: Record<string, Secret>;
@@ -142,4 +171,4 @@ export type SendHttpsStreaming = (
   request: TransportRequest,
   consume: ConsumeHttpsStream,
 ) => Promise<void>;
-export type PersistSecret = (name: string, expectedValue: string, value: string) => Promise<void>;
+export type PersistSecret = (ref: SecretRef, expectedValue: string, value: string) => Promise<void>;

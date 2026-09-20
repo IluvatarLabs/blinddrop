@@ -29,7 +29,7 @@ used by the disposable HTTPS receivers.
 npm run check
 npm test
 npm pack
-npm run check:package -- ./blinddrop-0.4.0.tgz
+npm run check:package -- ./blinddrop-0.5.1.tgz
 ```
 
 The test suite runs the real CLI, MCP helper and official SDK clients against
@@ -40,6 +40,8 @@ touching your normal installation. Inspect the tarball contents: it may contain
 only `dist/`, `ui/`, `plugin/`, `examples/`, the guides listed in `package.json`,
 the license and the third-party notices. The macOS app under `desktop/` has its
 own manifest and build steps in its README; it is not part of the npm package.
+Describe an app archive's architecture, signing and notarization state exactly
+as built.
 
 Three explicit checks contact external services or an installed agent host and
 are separate from the offline suite: `node scripts/check-postman.mjs`,
@@ -58,9 +60,10 @@ or generated fixture credentials only.
   actual workflow; prefer functional receivers over synthetic mocks.
 - Update the guides, help text and examples in the same change when behavior
   or names change. Do not describe untested behavior as supported.
-- Do not add a GUI, always-on daemon, hosted control plane, provider
-  catalogue, sandbox, or MITM certificate authority without an accepted change
-  to the documented behavior.
+- Keep the existing GUI to its owner-only loopback page and thin macOS shell.
+  Do not add an agent-reachable management route, always-on daemon, hosted
+  control plane, runtime provider catalogue, sandbox, or MITM certificate
+  authority without an accepted change to the documented behavior.
 - Include the real commands you ran and their observed results in the pull
   request. Do not report unrun checks as passing.
 

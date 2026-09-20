@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { migrateConnections } from "./connection-store.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { closeSync, fstatSync, openSync, readSync } from "node:fs";
 import process from "node:process";
@@ -10,7 +11,6 @@ import { Command, CommanderError } from "commander";
 import {
   createVault,
   defaultVaultPath,
-  loadVault,
   validateConnection,
   validateName
 } from "./vault.js";
@@ -37,7 +37,7 @@ import {
 import { deleteSessionFile, writeSessionFile } from "./session-file.js";
 import { createBrokerSession, type BrokerSession } from "./session.js";
 import type { Connection } from "./types.js";
-import { startOwnerUi } from "./ui.js";
+import { startOwnerUi, VERSION } from "./ui.js";
 
 const MAX_CONNECTION_DEFINITION_BYTES = 64 * 1024;
 const ENVIRONMENT_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/u;
@@ -275,7 +275,7 @@ async function main(): Promise<void> {
   program
     .name("blinddrop")
     .description("Local encrypted credentials for authorized agent HTTP requests")
-    .version("0.4.0")
+    .version(VERSION)
     .option("--vault <path>", "encrypted vault archive path", defaultVaultPath())
     .option("--password-fd <fd>", "read the vault passphrase from an inherited descriptor")
     .showSuggestionAfterError(false)
@@ -441,8 +441,8 @@ async function main(): Promise<void> {
     .description("list owner-visible secret and connection metadata")
     .action(async () => {
       const passphrase = await readPassphrase();
-      const vault = loadVault(globalOptions().vault, passphrase);
-      writeLine(JSON.stringify(listMetadata(vault), null, 2));
+      const { vault, connections } = migrateConnections(globalOptions().vault, passphrase);
+      writeLine(JSON.stringify(listMetadata(vault, connections), null, 2));
     });
 
   program
@@ -469,7 +469,13 @@ async function main(): Promise<void> {
         throw new BlindDropError("INVALID_INPUT");
       }
       const passphrase = await readPassphrase();
-      const session = createBrokerSession(globalOptions().vault, passphrase, options.allow, ttl);
+      const managed = migrateConnections(globalOptions().vault, passphrase);
+      const session = createBrokerSession(
+        [{ name: managed.context.vaultName, path: globalOptions().vault, passphrase }],
+        options.allow,
+        ttl,
+        { connections: managed.connections },
+      );
       if (options.http !== true) {
         await serveMcp(session.broker, session.expiresAt);
         return;
@@ -516,7 +522,10 @@ async function main(): Promise<void> {
     .option("--no-browser", "print the owner UI address instead of opening the system browser")
     .action(async (options: { port: string; browser: boolean }) => {
       const port = parsePort(options.port);
-      const ui = await startOwnerUi({ vaultPath: globalOptions().vault, port });
+      // v0.5.1: the owner UI is registry-driven; the default vault is managed at
+      // defaultVaultPath(). The --vault global still selects the archive for the
+      // other single-vault subcommands.
+      const ui = await startOwnerUi({ port });
       const stop = () => {
         void ui.close();
       };
@@ -559,7 +568,13 @@ async function main(): Promise<void> {
       const ttl = parseTtl(options.ttl);
       validateRunEnvironment(options);
       const passphrase = await readPassphrase();
-      const session = createBrokerSession(globalOptions().vault, passphrase, [connection], ttl);
+      const managed = migrateConnections(globalOptions().vault, passphrase);
+      const session = createBrokerSession(
+        [{ name: managed.context.vaultName, path: globalOptions().vault, passphrase }],
+        [connection],
+        ttl,
+        { connections: managed.connections },
+      );
       const http = await startOwnedHttpSession(session, 0);
       process.exitCode = await runChild(http, connection, executable, args, options);
     });

@@ -160,12 +160,12 @@ test('owner CLI → stdio MCP → real HTTPS: credential placements and refresh 
   assert.equal(removed.structuredContent.status, 204);
   const missing = await active.execute({ connection: 'header', path: '/file' });
   assert.equal(missing.structuredContent.status, 404);
-  assert.equal(loadVault(vault, passphrase).secrets.refresh.value, refresh);
+  assert.equal(loadVault(vault, passphrase).secrets.refresh.fields.value.value, refresh);
   await new Promise(resolve => setTimeout(resolve, 2100));
   const renewed = await active.execute({ connection: 'oauth', path: '/identity' });
   assert.equal(renewed.structuredContent.status, 200);
   assert.equal(tokenRequests, 2);
-  assert.equal(loadVault(vault, passphrase).secrets.refresh.value, refresh);
+  assert.equal(loadVault(vault, passphrase).secrets.refresh.fields.value.value, refresh);
   const reflected = await active.execute({ connection: 'oauth', path: '/reflect' });
   assert.equal(reflected.structuredContent.error?.code, 'RESPONSE_BLOCKED');
   transcripts.push(await active.close()); active = null;

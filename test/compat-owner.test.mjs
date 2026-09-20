@@ -1,3 +1,4 @@
+import { readConnections, connectionContext } from "../dist/connection-store.js";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -127,9 +128,10 @@ test("owner imports a reference-only Basic connection and disabled references de
   });
 
   const loaded = loadVault(vaultPath, passphrase);
-  assert.deepEqual(loaded.connections.stripe, {
+  assert.deepEqual(loaded.connections, {});
+  assert.deepEqual(readConnections(connectionContext(vaultPath).path).stripe, {
     origin: "https://api.stripe.com",
-    auth: { type: "basic", usernameSecret: "stripe-key" },
+    auth: { type: "basic", usernameSecret: "default#stripe-key#value" },
     allowPrivate: false,
     enabled: true,
   });
@@ -196,7 +198,7 @@ test("owner imports a reference-only Basic connection and disabled references de
   );
   assert.equal(disabledServe.code, 1);
   assert.equal(disabledServe.stderr, "SECRET_NOT_FOUND: The secret is unavailable.\n");
-  assert.equal(loadVault(vaultPath, passphrase).connections["stripe-copy"], undefined);
+  assert.equal(readConnections(connectionContext(vaultPath).path)["stripe-copy"], undefined);
 
   for (const result of [disabledImport, referencedRemoval, disabledServe]) {
     for (const value of forbidden) {
