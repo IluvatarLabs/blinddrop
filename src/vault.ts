@@ -712,6 +712,13 @@ function readArchive(path: string): Buffer {
   }
 }
 
+/** Validates readable encrypted-envelope structure without decrypting it. */
+export function validateVaultArchive(path: string): number {
+  const archive = readArchive(path);
+  if (archive[0] !== FILE_VERSION) throw new BlindDropError("VAULT_INVALID");
+  return archive.length;
+}
+
 function ensureParentDirectory(path: string): void {
   try {
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
@@ -1000,41 +1007,36 @@ export function saveVault(path: string, vault: VaultData, passphrase: string): v
  * The vault registry: the set of encrypted vault files this installation knows,
  * each with a display name used as the reference vault qualifier. It holds no
  * passphrases and no secret values — only paths and names — so it is plaintext
- * at mode 0600. The default vault is always present.
+ * at mode 0600. An empty registry has an in-memory default placeholder for
+ * first use; that placeholder is not persisted unless it becomes a real vault.
  */
 export function registryPath(configDir?: string): string {
   return join(configDir ?? dirname(defaultVaultPath()), "vaults.json");
 }
 
-/** Guarantees the default entry exists and every vault name is unique. */
-function normalizeRegistry(registry: VaultRegistry): VaultRegistry {
+/** Copies a validated registry and rejects duplicate names. */
+function validateRegistry(registry: VaultRegistry): VaultRegistry {
   const names = new Set<string>();
   const vaults = [] as VaultRegistry["vaults"];
-  let hasDefault = false;
   for (const entry of registry.vaults) {
     if (names.has(entry.name)) {
       throw new BlindDropError("VAULT_INVALID");
     }
     names.add(entry.name);
-    if (entry.name === DEFAULT_VAULT_NAME) {
-      hasDefault = true;
-    }
     vaults.push({ name: entry.name, path: entry.path });
-  }
-  if (!hasDefault) {
-    vaults.unshift({ name: DEFAULT_VAULT_NAME, path: defaultVaultPath() });
   }
   return { version: REGISTRY_VERSION, vaults };
 }
 
-export function loadRegistry(configDir?: string): VaultRegistry {
+/** The exact persisted registrations, without a synthetic first-use entry. */
+export function loadStoredRegistry(configDir?: string): VaultRegistry {
   const path = registryPath(configDir);
   let contents: Buffer;
   try {
     contents = readFileSync(path);
   } catch (error) {
     if (errorCode(error) === "ENOENT") {
-      return normalizeRegistry({ version: REGISTRY_VERSION, vaults: [] });
+      return { version: REGISTRY_VERSION, vaults: [] };
     }
     throw new BlindDropError("STORAGE_ERROR");
   }
@@ -1051,7 +1053,17 @@ export function loadRegistry(configDir?: string): VaultRegistry {
   if (!parsed.success) {
     throw new BlindDropError("VAULT_INVALID");
   }
-  return normalizeRegistry(parsed.data);
+  return validateRegistry(parsed.data);
+}
+
+/** UI view: an entirely empty registry exposes one unused default slot. */
+export function loadRegistry(configDir?: string): VaultRegistry {
+  const stored = loadStoredRegistry(configDir);
+  if (stored.vaults.length > 0) return stored;
+  return {
+    version: REGISTRY_VERSION,
+    vaults: [{ name: DEFAULT_VAULT_NAME, path: defaultVaultPath() }],
+  };
 }
 
 export function saveRegistry(registry: VaultRegistry, configDir?: string): void {
@@ -1059,8 +1071,8 @@ export function saveRegistry(registry: VaultRegistry, configDir?: string): void 
   if (!parsed.success) {
     throw new BlindDropError("INVALID_INPUT");
   }
-  const normalized = normalizeRegistry(parsed.data);
-  const serialized = Buffer.from(JSON.stringify(normalized), "utf8");
+  const stored = validateRegistry(parsed.data);
+  const serialized = Buffer.from(JSON.stringify(stored), "utf8");
   if (serialized.length > MAX_REGISTRY_BYTES) {
     throw new BlindDropError("INVALID_INPUT");
   }

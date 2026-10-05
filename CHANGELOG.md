@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.6.0] - unreleased
+
+- Standalone Mac workflow with a bundled runtime, shared Create/Add/Open forms and app-first setup instructions.
+- Lock All is enforced by the owner runtime even with Settings focused or no window. Closing the window preserves the current session; Quit ends it and relaunch starts locked. Saved sleep/screen locking applies from launch.
+- One bundled monochrome menu-bar icon with Open and Quit.
+- Agent Integrations controls for Claude Code and local Codex: native plugin installation, update/removal, managed endpoint refresh and bundled helper execution. Status distinguishes configuration from authenticated use.
+- Complete Back Up Setup and fresh-state Restore Setup, preserving independent encrypted archives and reference-only metadata. The one-archive operation is named Export Encrypted Vault.
+- Named first vaults keep their chosen name without a missing default registration. Stripe template input, field metadata edits and empty-group persistence are corrected.
+- Runtime, app, plugin and skill versions aligned; canonical download link and standard Forge signing/notarization configuration. Artifact verification remains separate from source changes.
+
 ## [0.5.1] - 2026-09-20
 
 ### Added

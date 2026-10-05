@@ -1,0 +1,13 @@
+{
+  "name": "blinddrop",
+  "version": "0.6.0",
+  "description": "Use encrypted local credentials through BlindDrop without exposing them to agents.",
+  "homepage": "https://github.com/IluvatarLabs/blinddrop#readme",
+  "license": "PolyForm-Noncommercial-1.0.0",
+  "interface": {
+    "displayName": "BlindDrop",
+    "shortDescription": "Use encrypted local credentials without exposing them"
+  },
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json"
+}

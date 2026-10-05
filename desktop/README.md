@@ -9,7 +9,9 @@ the macOS around it — the window and its
 sizes, the application menu, native file dialogs, Reveal in Finder, Move to
 Trash, Open at login, and locking when the Mac sleeps or the screen locks.
 
-macOS only. Linux and Windows owners use `blinddrop ui` and their browser.
+For normal use, download the Mac app from the [release page](https://github.com/IluvatarLabs/blinddrop/releases/latest), move it into Applications and open it. No Node, global CLI or PATH setup is needed. Create or open a vault, save a connection from a template, and install the Claude Code/local Codex integration under Settings → Sessions. The prerequisites below apply only to building from source.
+
+The native app targets macOS. Other platforms need their own verification.
 
 ## Prerequisites
 
@@ -45,7 +47,7 @@ tarball dependency; an ordinary install can retain the previous copy:
 
 ```sh
 npm run vendor
-npm install --force ./vendor/blinddrop-0.5.1.tgz
+npm install --force ./vendor/blinddrop-0.6.0.tgz
 ```
 
 `package-lock.json` is not committed. The only entry under `dependencies` is the
@@ -101,17 +103,16 @@ option cannot quietly open another archive instead.
 Settings live at `<config dir>/settings.json` with mode 0600, where
 `<config dir>` is the directory of the default vault path
 (`~/.config/blinddrop`). The owner server owns that file; the app reads it once
-at start, for `lastVault` only, and never writes it. It also holds the
+at start for the selected archive and native settings, and never writes it directly. It also holds the
 appearance, the session port and session-file switches, the recent vaults, the
 last backup time, and the three macOS switches the app acts on: Open at login,
 Lock when the Mac sleeps and Lock when the screen locks.
 
 ## Running the built app
 
-Launch `BlindDrop.app` from Finder, or with `open` from a terminal. The build is
-unsigned and is not notarized: it is meant to run on the machine that built it.
-Downloaded builds can be blocked by macOS Gatekeeper. Signing and notarization
-are not provided by this build process.
+Launch `BlindDrop.app` from Finder. The release notes identify the signing and notarization status of each downloadable artifact. Replacing the app preserves the separate owner data directory; quit first, replace the app, then reopen and unlock. Settings → General links to the canonical release page. There is no automatic updater.
+
+For release builds, Forge accepts an explicit Developer ID Application identity through `BLINDDROP_SIGN_IDENTITY`, and a notarization Keychain profile through `BLINDDROP_NOTARY_KEYCHAIN_PROFILE`. The standard `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID` alternative is also accepted by the build configuration. Keep credentials out of source and command logs. Without a Developer ID identity, the build is unsigned; a Development/App Store identity is not a direct-download substitute. Verify the produced artifact's signature, notarization and Gatekeeper assessment before labeling it signed/notarized.
 
 ## What the app does
 
@@ -129,12 +130,17 @@ no parent: ⌘W closes it and nothing else changes, and closing the main window
 closes it too while the app remains available in the menu bar.
 
 The application menu is the only App, File, Edit, View, Window and Help menu;
-the page draws no menu bar of its own in the app. Menu items that are not
-standard macOS roles send a named command to the focused page.
+the page draws no menu bar of its own in the app. Workspace menu commands focus or reopen the main window. Lock All calls the owner runtime directly, including with no open window; Settings opens independently.
 
-If the packed runtime has no built owner server, the window opens empty with the
-title `BlindDrop runtime not built`; run `npm run vendor` and `npm install` again
-after building the runtime.
+A startup failure shows a static error and quits rather than opening an unusable window.
+
+The menu bar uses one monochrome template icon, with Open and Quit. Saved sleep/screen-lock choices apply from startup even while no window is open. The default remains lock-on-sleep on and lock-on-screen-lock off.
+
+## Integrations and recovery
+
+Settings manages only this app's Claude Code and local Codex integration through native host plugin commands. Helpers and hooks use the bundled runtime. Configured status is distinct from authenticated use; the page shows the managed version and required host reload. Update repairs the managed installation after app replacement or moving it. Unrelated host configuration is preserved.
+
+Export Encrypted Vault copies one archive. Back Up Setup additionally includes the registry, connection definitions, groups and settings; these remain owner-only plaintext metadata alongside encrypted vaults. Restore Setup accepts only an empty app configuration and leaves all vaults locked. It never merges or overwrites existing owner data.
 
 ## Security
 
@@ -154,6 +160,6 @@ renderer sandbox on. The page reaches the owner server over loopback HTTP
 exactly as the browser does. The preload script adds one bridge,
 `window.desktop`, and nothing else: the platform name, the file dialogs for
 choosing a vault, the path of a dropped file, Reveal in Finder, Move to Trash,
-the screen size and settings-window calls, the menu-command subscription, and
-the three macOS switches above. No `ipcRenderer`, `require` or arbitrary channel
+the screen size and settings-window calls, the menu-command subscription,
+native settings, managed integration actions, setup-folder selection and the fixed release-page link. No `ipcRenderer`, `require` or arbitrary channel
 is exposed, and every path the bridge acts on must be absolute.

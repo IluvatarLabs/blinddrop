@@ -1,11 +1,11 @@
 ---
 name: blinddrop
-description: Use an API key, token or other credential without ever seeing it. BlindDrop keeps the owner's credentials in a local encrypted vault and makes the authenticated HTTPS request for you. Use this skill when a task needs an API key, token, password or authenticated request; when a request comes back 401 Unauthorized or 403 Forbidden; when you are about to read, search or copy a .env file, a .pem or .key file, an id_rsa file or any other credential store; or when the owner asks for a call to an API you hold no key for. It covers the two session tools, list_connections and execute_http, the `blinddrop run` wrapper for SDKs and CLIs, what to do when the connection you need does not exist, and what never to do with a credential.
+description: Use an API key, token or other credential without ever seeing it. BlindDrop keeps the owner's credentials in a local encrypted vault and makes the authenticated HTTPS request for you. Use this skill when a task needs an API key, token, password or authenticated request; when a request comes back 401 Unauthorized or 403 Forbidden; when you are about to read, search or copy a .env file, a .pem or .key file, an id_rsa file or any other credential store; or when the owner asks for a call to an API you hold no key for. It covers the two session tools, list_connections and execute_http, the optional `blinddrop run` CLI workflow, what to do when the connection you need does not exist, and what never to do with a credential.
 license: PolyForm-Noncommercial-1.0.0
-compatibility: Requires the blinddrop executable installed locally and a session the owner has started; the agent host must support MCP over HTTP, or the work must run under `blinddrop run`.
+compatibility: Requires a running BlindDrop app session and an agent host with local HTTP MCP support; an owner who explicitly uses the installed CLI may instead use `blinddrop run`.
 metadata:
   component: agent-credential-use
-  version: "0.5.1"
+  version: "0.6.0"
 ---
 
 # BlindDrop: use credentials you are not allowed to read
@@ -13,9 +13,9 @@ metadata:
 ## How it works, and what you never see
 
 The owner keeps secrets in one or more local encrypted vaults, unlocks the ones a
-task needs in their own terminal or in the BlindDrop app, and authorizes an exact
-list of **connections** for the session. A connection binds one HTTPS origin to
-the stored secret fields it uses and one authentication format.
+task needs in the BlindDrop app, and authorizes an exact list of **connections**
+for the session. A connection binds one HTTPS origin to the stored secret fields
+it uses and one authentication format.
 
 You send an ordinary HTTPS request naming a connection. BlindDrop adds the
 configured authentication inside its own process, sends it to that origin, checks
@@ -60,10 +60,11 @@ tells you what is actually available before you plan a request.
 - Do not add an `Authorization`, `x-api-key` or similar header yourself.
   BlindDrop supplies the authentication; a header you invent will be wrong.
 
-## SDKs and command-line tools: `blinddrop run`
+## Optional installed-CLI workflows: `blinddrop run`
 
-For work that belongs to a real SDK or CLI rather than a single request, the
-owner runs the command inside a session:
+If the owner explicitly chooses the installed CLI for work that belongs to an
+SDK or command-line tool rather than a single request, they run the command
+inside a session:
 
 ```sh
 blinddrop run work-api -- node ./script.mjs /v1/items
@@ -92,15 +93,22 @@ command to run.
 - Never print, log, echo, commit or write a credential value anywhere, including
   into a scratch file, a test fixture, or a message to the owner.
 - Never ask the owner to paste a key, token or passphrase into the conversation.
-  Credentials are entered at the owner's hidden prompt, nowhere else.
+  Credentials belong in BlindDrop's protected owner fields or, for an explicit
+  installed-CLI workflow, the CLI's hidden prompt.
 - Never store a credential you were given by accident: report it and stop.
 
 ## When the connection you need does not exist
 
 `list_connections` is the authority. If the connection you need is not there,
-do not look for the key elsewhere. Tell the owner exactly what to run in their
-own terminal, or the same steps in the BlindDrop app, substituting the real
-origin and authentication format:
+do not look for the key elsewhere. Ask the owner to open BlindDrop, unlock the
+target vault, choose **New Connection**, select the matching template (or
+**Custom**), enter the credential in the protected fields, and save. For a
+credential with several parts or a separate vault, the owner uses one typed
+multi-field secret; references can name a vault and field as
+`vault#secret#field`.
+
+If the owner explicitly prefers the installed CLI, the equivalent optional
+workflow is:
 
 ```sh
 blinddrop secret set work-key
@@ -115,37 +123,23 @@ Other formats are `--auth header --secret KEY_REF --field X-Api-Key`,
 `--allow-private` for a private or localhost HTTPS API. The value is typed at
 the hidden prompt `secret set` opens; it is never a command argument.
 
-For a credential with several parts (an AWS key pair, a client id and secret) or
-to keep it in a separate vault, tell the owner to build a typed multi-field
-secret or pick a connection template in the BlindDrop app instead; a reference can
-name a vault and field as `vault#secret#field`. A single-value key still works
-exactly as shown above.
-
 Changing the archive requires a new session. In the BlindDrop app that happens
 by itself: an owner change restarts the session. With a terminal session, the
 owner stops it, makes the change, and starts a new one.
 
 ## When no BlindDrop session is attached
 
-If your tool list has no BlindDrop tools, no session is reachable. Ask the owner
-to unlock the BlindDrop app: while a vault is unlocked a session runs, and it
-writes the session file this plugin reads automatically. Locking every vault or
-quitting the app ends that session.
+If your tool list has no BlindDrop tools, ask the owner to unlock the BlindDrop
+app. While a vault is unlocked, the app runs a session and the managed plugin's
+header helper reads its rotating session file. Locking every vault or quitting
+the app ends access.
 
-The owner can instead start one in their own terminal:
+If the tools are still absent, ask the owner to use **Settings → Sessions**
+and choose **Install** or **Update** for this host. Claude Code
+then needs a restart or `/reload-plugins`; Codex needs a new session and may ask
+the owner to review the plugin. Configuration is not proof of connection, so
+call `list_connections` again after that supported reload step.
 
-```sh
-blinddrop serve --http --allow work-api --ttl 3600
-```
-
-It prints one JSON line with `mcpUrl`, `connections`, `token` and `expiresAt`,
-and keeps running. The host is then attached by hand with the printed values,
-for example:
-
-```sh
-claude mcp add --transport http blinddrop MCP_URL --header "Authorization: Bearer SESSION_TOKEN"
-```
-
-That token is session-use capability, not the vault passphrase or the provider
-key, and it stops working when the session stops or expires. Let the owner
-configure it; do not ask for it to be pasted into the conversation.
+Only when the owner explicitly chose an installed-CLI workflow should you refer
+them to the CLI's `serve` documentation. Never ask them to copy a session token
+into chat or expose it to you.

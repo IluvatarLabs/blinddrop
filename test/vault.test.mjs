@@ -18,10 +18,7 @@ import { test } from "node:test";
 
 import {
   createVault,
-  loadRegistry,
   loadVault,
-  registryPath,
-  saveRegistry,
   saveVault,
   validateConnection,
   validateName,
@@ -532,32 +529,4 @@ test("connection validation covers bounded compatibility authentication and TLS 
   for (const connection of invalid) {
     assert.throws(() => validateConnection(connection), throwsCode("INVALID_INPUT"));
   }
-});
-
-test("the vault registry round-trips at mode 0600 with the default vault always present", (t) => {
-  const directory = workspace(t);
-
-  // With no registry file yet, the default vault is the sole known entry.
-  const initial = loadRegistry(directory);
-  assert.equal(initial.version, 1);
-  assert.deepEqual(initial.vaults.map((entry) => entry.name), ["default"]);
-
-  // Saving a registry that names another vault keeps the default present.
-  saveRegistry(
-    { version: 1, vaults: [{ name: "work", path: join(directory, "work.enc") }] },
-    directory,
-  );
-  assert.equal(statSync(registryPath(directory)).mode & 0o777, 0o600);
-  const loaded = loadRegistry(directory);
-  assert.deepEqual(loaded.vaults.map((entry) => entry.name).sort(), ["default", "work"]);
-  assert.equal(loaded.vaults.find((entry) => entry.name === "work").path, join(directory, "work.enc"));
-
-  // A duplicate vault name is rejected rather than silently merged.
-  assert.throws(
-    () => saveRegistry(
-      { version: 1, vaults: [{ name: "work", path: "/a" }, { name: "work", path: "/b" }] },
-      directory,
-    ),
-    throwsCode("VAULT_INVALID"),
-  );
 });

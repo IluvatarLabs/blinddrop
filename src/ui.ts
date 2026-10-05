@@ -45,6 +45,7 @@ import {
 } from "./references.js";
 import { deleteSessionFile, writeSessionFile } from "./session-file.js";
 import { createBrokerSession, type VaultUnlock } from "./session.js";
+import { backupSetup, restoreSetup } from "./setup-backup.js";
 import type { Connection, VaultData } from "./types.js";
 import {
   changePassphrase,
@@ -60,6 +61,7 @@ import {
   createVault,
   defaultVaultPath,
   loadRegistry,
+  loadStoredRegistry,
   loadVault,
   saveRegistry,
   validateName,
@@ -135,6 +137,7 @@ const GroupsBody = z
   })
   .strict();
 const BackupBody = z.object({ vault: z.string(), path: z.string() }).strict();
+const SetupPathBody = z.object({ path: z.string() }).strict();
 const PasswdBody = z.object({ vault: z.string(), current: z.string(), new: z.string() }).strict();
 
 export interface OwnerUiOptions {
@@ -151,6 +154,7 @@ export interface OwnerUi {
   token: string;
   launchUrl: string;
   closed: Promise<void>;
+  lockAll(): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -266,13 +270,15 @@ export async function startOwnerUi(options: OwnerUiOptions): Promise<OwnerUi> {
   // Activity is global; the running session logs to the default vault's log.
   const logPath = activityLogPath(defaultPath);
 
-  if (options.vaultPath && resolve(options.vaultPath) !== resolve(defaultPath)) {
-    const entries = loadRegistry(configDir).vaults;
+  if (options.vaultPath && existsSync(options.vaultPath)) {
+    const entries = loadStoredRegistry(configDir).vaults;
     if (!entries.some(entry => resolve(entry.path) === resolve(options.vaultPath!))) {
-      const defaultEntry = entries.find(entry => entry.name === "default")!;
-      let name = existsSync(defaultEntry.path) ? basename(options.vaultPath, ".enc").replace(/[^A-Za-z0-9._-]/g, "-").slice(0, 50).replace(/^[._-]+|[._-]+$/g, "") || "vault" : "default";
+      const firstRegistration = entries.length === 0;
+      let name = firstRegistration || resolve(options.vaultPath) === resolve(defaultPath)
+        ? DEFAULT_VAULT_NAME
+        : basename(options.vaultPath, ".enc").replace(/[^A-Za-z0-9._-]/g, "-").slice(0, 50).replace(/^[._-]+|[._-]+$/g, "") || "vault";
       const base = name;
-      for (let i = 2; entries.some(entry => entry.name === name && name !== "default"); i++) name = `${base}-${i}`;
+      for (let i = 2; entries.some(entry => entry.name === name && name !== DEFAULT_VAULT_NAME); i++) name = `${base}-${i}`;
       registerVault(name, options.vaultPath);
     }
   }
@@ -335,12 +341,13 @@ export async function startOwnerUi(options: OwnerUiOptions): Promise<OwnerUi> {
   function assertVaultReservation(name: string, path: string): void {
     validateName(name);
     assertVaultPath(path);
-    const collision = registryEntries().find(entry => resolve(entry.path) === resolve(path) && entry.name !== name);
+    const collision = loadStoredRegistry(configDir).vaults
+      .find(entry => resolve(entry.path) === resolve(path) && entry.name !== name);
     if (collision) throw new BlindDropError("INVALID_INPUT");
   }
 
   function registerVault(name: string, path: string): void {
-    const registry = loadRegistry(configDir);
+    const registry = loadStoredRegistry(configDir);
     const existing = registry.vaults.find(item => item.name === name);
     if (existing !== undefined) {
       if (resolve(existing.path) === resolve(path)) return;
@@ -351,7 +358,7 @@ export async function startOwnerUi(options: OwnerUiOptions): Promise<OwnerUi> {
   }
 
   function unregisterVault(name: string): void {
-    const registry = loadRegistry(configDir);
+    const registry = loadStoredRegistry(configDir);
     saveRegistry({ version: 1, vaults: registry.vaults.filter(item => item.name !== name) }, configDir);
   }
 
@@ -439,12 +446,7 @@ export async function startOwnerUi(options: OwnerUiOptions): Promise<OwnerUi> {
     }
   }
 
-  /**
-   * The single owner of `active`. Steps: stop what runs, decide whether a
-   * session may run at all, start one from the current unlocked snapshot,
-   * publish it, and renew it when it expires while any vault stays unlocked.
-   */
-  async function runSync(): Promise<void> {
+  async function stopActiveSession(): Promise<void> {
     const previous = active;
     if (previous !== undefined) {
       // Forget first: the entry's `closed` handler must not treat a deliberate
@@ -456,6 +458,15 @@ export async function startOwnerUi(options: OwnerUiOptions): Promise<OwnerUi> {
         // A listener that will not close is already unusable to an agent.
       }
     }
+  }
+
+  /**
+   * The single owner of `active`. Steps: stop what runs, decide whether a
+   * session may run at all, start one from the current unlocked snapshot,
+   * publish it, and renew it when it expires while any vault stays unlocked.
+   */
+  async function runSync(): Promise<void> {
+    await stopActiveSession();
     if (stopped || passphrases.size === 0) {
       sessionError = null;
       return;
@@ -516,11 +527,27 @@ export async function startOwnerUi(options: OwnerUiOptions): Promise<OwnerUi> {
     }
   }
 
-  /** Overlapping callers run one after another, never concurrently. */
+  /** Overlapping owner/session operations run one after another. */
+  function serializeOwner<T>(operation: () => T | Promise<T>): Promise<T> {
+    const result = syncChain.then(operation, operation);
+    syncChain = result.then(() => undefined, () => undefined);
+    return result;
+  }
+
   function syncSession(): Promise<void> {
-    const next = syncChain.then(runSync, runSync);
-    syncChain = next;
-    return next;
+    return serializeOwner(runSync);
+  }
+
+  /** Stop agent traffic while a bounded synchronous snapshot reads owner files. */
+  function withSessionPaused<T>(operation: () => T): Promise<T> {
+    return serializeOwner(async () => {
+      await stopActiveSession();
+      try {
+        return operation();
+      } finally {
+        if (!stopped) await runSync();
+      }
+    });
   }
 
   function verify(supplied: string): void {
@@ -850,6 +877,29 @@ export async function startOwnerUi(options: OwnerUiOptions): Promise<OwnerUi> {
         return { ...copied, lastBackupAt };
       }
     }],
+    ["/api/setup/backup", {
+      POST: body => {
+        const input = parse(SetupPathBody, body);
+        return withSessionPaused(() => backupSetup(configDir, input.path));
+      }
+    }],
+    ["/api/setup/restore", {
+      POST: body => {
+        const input = parse(SetupPathBody, body);
+        if (passphrases.size > 0 || active !== undefined ||
+            registryEntries().some(entry => existsSync(entry.path))) {
+          throw new BlindDropError("VAULT_EXISTS");
+        }
+        return serializeOwner(() => {
+          if (passphrases.size > 0 || active !== undefined ||
+              registryEntries().some(entry => existsSync(entry.path))) {
+            throw new BlindDropError("VAULT_EXISTS");
+          }
+          restoreSetup(configDir, input.path);
+          return state();
+        });
+      }
+    }],
     ["/api/passwd", {
       POST: async body => {
         const input = parse(PasswdBody, body);
@@ -983,6 +1033,11 @@ export async function startOwnerUi(options: OwnerUiOptions): Promise<OwnerUi> {
     return closePromise;
   }
 
+  async function lockAll(): Promise<void> {
+    releaseAll();
+    await syncSession();
+  }
+
   try {
     await new Promise<void>((resolve, reject) => {
       const onError = () => reject(new BlindDropError("PORT_UNAVAILABLE"));
@@ -1004,5 +1059,5 @@ export async function startOwnerUi(options: OwnerUiOptions): Promise<OwnerUi> {
   }
   authority = `127.0.0.1:${address.port}`;
   pageOrigin = `http://${authority}`;
-  return { url: `${pageOrigin}/`, token, launchUrl: `${pageOrigin}/?t=${token}`, closed, close };
+  return { url: `${pageOrigin}/`, token, launchUrl: `${pageOrigin}/?t=${token}`, closed, lockAll, close };
 }

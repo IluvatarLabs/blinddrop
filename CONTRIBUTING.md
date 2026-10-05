@@ -29,7 +29,7 @@ used by the disposable HTTPS receivers.
 npm run check
 npm test
 npm pack
-npm run check:package -- ./blinddrop-0.5.1.tgz
+npm run check:package -- ./blinddrop-0.6.0.tgz
 ```
 
 The test suite runs the real CLI, MCP helper and official SDK clients against

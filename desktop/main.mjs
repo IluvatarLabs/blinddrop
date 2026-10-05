@@ -14,15 +14,23 @@ import { readFileSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { createIntegrationManager } from "./integrations.mjs";
+
 const APP_TITLE = "BlindDrop";
 const HELP_URL = "https://github.com/IluvatarLabs/blinddrop";
+const RELEASE_URL = "https://github.com/IluvatarLabs/blinddrop/releases/latest";
 const VAULT_OPTION = "--vault";
 const SETTINGS_FILE = "settings.json";
 const VAULT_FILE = "vault.enc";
 const PRELOAD = fileURLToPath(new URL("preload.cjs", import.meta.url));
+const TRAY_ICON = fileURLToPath(new URL("assets/trayTemplate.png", import.meta.url));
+const PLUGIN_ROOT = app.isPackaged
+  ? join(process.resourcesPath, "plugin")
+  : fileURLToPath(new URL("node_modules/blinddrop/plugin/", import.meta.url));
 const START_FAILED_MESSAGE =
   "BlindDrop could not start the owner interface. Quit BlindDrop and start it again.";
 const SHUTDOWN_FAILED_LOG = "BlindDrop: the owner interface did not shut down cleanly.";
+const LOCK_FAILED_LOG = "BlindDrop: the owner interface could not lock every vault.";
 const ABSOLUTE_PATH_REQUIRED = "A file path must be absolute.";
 
 // The page's `--surface` token, resolved to sRGB. Light `oklch(100% 0 0)`,
@@ -60,7 +68,10 @@ let settingsWindow = null;
 let tray = null;
 /** The directory the owner server keeps `settings.json` and `session.json` in. */
 let configDir = "";
-/** Power events currently forwarded as a `lock` command, by event name. */
+/** @type {import("./integrations.mjs").IntegrationManager | null} */
+let integrations = null;
+let appliedSessionPort = null;
+/** Power events currently bound to app-global Lock All, by event name. */
 const powerListeners = new Map();
 
 /**
@@ -229,15 +240,45 @@ function openSettings(tab) {
 }
 
 /**
- * Deliver a menu command to the page that asked for it.
+ * Deliver a workspace command to the one main page. If the app is resident
+ * with no main window, recreate it and wait for its page before dispatching.
+ * Settings never becomes an accidental command target.
  *
- * @param {import("electron").BrowserWindow | undefined} window
  * @param {string} name
  */
-function sendCommand(window, name) {
-  const target = window ?? BrowserWindow.getFocusedWindow() ?? mainWindow;
-  if (target !== null && target !== undefined && !target.isDestroyed()) {
-    target.webContents.send("command", name);
+async function sendMainCommand(name) {
+  if (ui === null) return;
+  if (mainWindow === null || mainWindow.isDestroyed()) await createMainWindow();
+  const target = mainWindow;
+  if (target === null || target.isDestroyed()) return;
+  if (target.isMinimized()) target.restore();
+  target.show();
+  target.focus();
+  if (target.webContents.isLoadingMainFrame()) {
+    await new Promise(resolve => target.webContents.once("did-finish-load", resolve));
+  }
+  if (target === mainWindow && !target.isDestroyed()) target.webContents.send("command", name);
+}
+
+/** Refresh every owner view from the runtime's authoritative state. */
+function refreshWindows() {
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.isDestroyed()) window.webContents.send("command", "refresh-state");
+  }
+}
+
+/**
+ * Lock every vault through the owner runtime, independent of window/focus.
+ * Session synchronization completes before any open view is told to reload.
+ */
+async function lockAll() {
+  const session = ui;
+  if (session === null) return;
+  try {
+    await session.lockAll();
+    refreshWindows();
+  } catch {
+    console.error(LOCK_FAILED_LOG);
   }
 }
 
@@ -251,7 +292,9 @@ function item(label, command, accelerator) {
   return {
     label,
     ...(accelerator === undefined ? {} : { accelerator }),
-    click: (_menuItem, window) => sendCommand(window, command),
+    click: () => {
+      void sendMainCommand(command);
+    },
   };
 }
 
@@ -264,9 +307,19 @@ function buildMenu() {
       submenu: [
         item(`About ${APP_TITLE}`, "about"),
         { type: "separator" },
-        item("Settings…", "settings", "Command+,"),
+        {
+          label: "Settings…",
+          accelerator: "Command+,",
+          click: () => openSettings(),
+        },
         { type: "separator" },
-        item("Lock vault", "lock", "Command+L"),
+        {
+          label: "Lock All",
+          accelerator: "Command+L",
+          click: () => {
+            void lockAll();
+          },
+        },
         { type: "separator" },
         { role: "hide" },
         { role: "hideOthers" },
@@ -285,7 +338,7 @@ function buildMenu() {
         item("Import connection definition…", "import-json"),
         { type: "separator" },
         item("Open vault…", "open-vault", "Command+O"),
-        item("Back up vault…", "backup"),
+        item("Export Encrypted Vault…", "backup"),
         { type: "separator" },
         { role: "close", label: "Close window" },
       ],
@@ -346,13 +399,13 @@ function buildMenu() {
 
 /**
  * The menu-bar (status bar) presence that keeps the app reachable with no
- * window. Its image is the macOS system locked-lock glyph as a template image,
- * so it renders as a monochrome icon that adapts to light and dark menu bars.
+ * window. Its bundled template image renders as a monochrome icon that adapts
+ * to light and dark menu bars.
  * Exactly two items: open the window, or quit everything. Left-clicking the
  * icon also opens or focuses the window.
  */
 function createTray() {
-  const image = nativeImage.createFromNamedImage("NSImageNameLockLockedTemplate");
+  const image = nativeImage.createFromPath(TRAY_ICON);
   image.setTemplateImage(true);
   tray = new Tray(image);
   tray.setToolTip(APP_TITLE);
@@ -367,7 +420,7 @@ function createTray() {
 }
 
 /**
- * Turn one power event into a `lock` command, or stop forwarding it. Registering
+ * Turn one power event into app-global Lock All, or stop forwarding it. Registering
  * the same event twice is a no-op, so the page may call `applySettings` after
  * every settings write.
  *
@@ -377,7 +430,9 @@ function createTray() {
 function forwardPowerEvent(event, on) {
   const registered = powerListeners.get(event);
   if (on && registered === undefined) {
-    const listener = () => sendCommand(mainWindow ?? undefined, "lock");
+    const listener = () => {
+      void lockAll();
+    };
     powerMonitor.on(event, listener);
     powerListeners.set(event, listener);
   } else if (!on && registered !== undefined) {
@@ -389,7 +444,7 @@ function forwardPowerEvent(event, on) {
 /**
  * @param {unknown} settings
  */
-function applySettings(settings) {
+async function applySettings(settings, refreshIntegrations = true) {
   const value = typeof settings === "object" && settings !== null ? settings : {};
   // Only touch the login item when the setting differs: macOS refuses the call for an
   // unsigned build and logs an error even when nothing would change.
@@ -399,6 +454,15 @@ function applySettings(settings) {
   }
   forwardPowerEvent("suspend", value.lockOnSleep === true);
   forwardPowerEvent("lock-screen", value.lockOnScreenLock === true);
+  const sessionPort = Number.isInteger(value.sessionPort) ? value.sessionPort : 8787;
+  if (
+    integrations !== null &&
+    refreshIntegrations &&
+    sessionPort !== appliedSessionPort
+  ) {
+    await integrations.applyEndpoint(sessionPort);
+  }
+  appliedSessionPort = sessionPort;
 }
 
 /**
@@ -428,6 +492,30 @@ async function chooseVault(kind) {
 }
 
 /**
+ * Pick the one setup-backup folder. Backup may create a new folder; restore
+ * only selects an existing source. The owner API validates its contents.
+ *
+ * @param {unknown} kind
+ * @returns {Promise<string | null>}
+ */
+async function chooseSetupFolder(kind) {
+  if (kind === "backup") {
+    const today = new Date().toISOString().slice(0, 10);
+    const result = await dialog.showSaveDialog({
+      title: "Back Up Setup",
+      defaultPath: join(app.getPath("documents"), `BlindDrop Setup ${today}`),
+      buttonLabel: "Back Up",
+    });
+    return result.canceled ? null : (result.filePath || null);
+  }
+  if (kind === "restore") {
+    const result = await dialog.showOpenDialog({ properties: ["openDirectory"] });
+    return result.canceled ? null : (result.filePaths[0] ?? null);
+  }
+  return null;
+}
+
+/**
  * @param {unknown} target
  * @returns {string}
  */
@@ -439,6 +527,7 @@ function absolutePath(target) {
 /** The whole bridge. Nothing else crosses from the page into the app. */
 function registerBridge() {
   ipcMain.handle("desktop:choose-vault", (_event, kind) => chooseVault(kind));
+  ipcMain.handle("desktop:choose-setup-folder", (_event, kind) => chooseSetupFolder(kind));
   ipcMain.handle("desktop:reveal-path", (_event, target) => {
     shell.showItemInFolder(absolutePath(target));
   });
@@ -449,9 +538,12 @@ function registerBridge() {
   ipcMain.handle("desktop:open-settings", (_event, tab) => {
     openSettings(tab);
   });
-  ipcMain.handle("desktop:apply-settings", (_event, settings) => {
-    applySettings(settings);
-  });
+  ipcMain.handle("desktop:apply-settings", (_event, settings) => applySettings(settings));
+  ipcMain.handle("desktop:open-release-page", () => shell.openExternal(RELEASE_URL));
+  ipcMain.handle("desktop:get-integrations", () => integrations?.getIntegrations());
+  ipcMain.handle("desktop:manage-integration", (_event, input) =>
+    integrations?.manageIntegration(input),
+  );
 }
 
 /** Show a static message and quit. Never reports the cause, which can carry the URL. */
@@ -496,10 +588,11 @@ function quit(event) {
   });
 }
 
-// Closing the window keeps the app alive: the owner server, the session and the
-// session file stay running so agents keep working, reachable from the menu-bar
-// tray. On macOS the app already stays alive when its windows close, so there is
-// no `window-all-closed` handler to quit. Only quitting shuts everything down.
+// Electron quits when the last window closes unless this event is handled.
+// BlindDrop stays resident with its owner runtime and menu-bar item; Quit is
+// the only path that tears the runtime down.
+app.on("window-all-closed", () => {});
+
 app.on("activate", () => {
   showWindow();
 });
@@ -517,9 +610,11 @@ app.whenReady().then(async () => {
 
   let startOwnerUi;
   let defaultVaultPath;
+  let readSettings;
   try {
     ({ startOwnerUi } = await import("blinddrop/dist/ui.js"));
     ({ defaultVaultPath } = await import("blinddrop/dist/vault.js"));
+    ({ readSettings } = await import("blinddrop/dist/owner-files.js"));
   } catch {
     failStartup();
     return;
@@ -549,6 +644,25 @@ app.whenReady().then(async () => {
   void ui.closed.then(() => quit(undefined));
 
   try {
+    let settings;
+    try {
+      settings = readSettings(configDir);
+    } catch {
+      settings = {
+        openAtLogin: false,
+        lockOnSleep: true,
+        lockOnScreenLock: false,
+        sessionPort: 8787,
+      };
+    }
+    integrations = createIntegrationManager({
+      configDir,
+      pluginRoot: PLUGIN_ROOT,
+      executablePath: process.execPath,
+      endpointPort: settings.sessionPort,
+    });
+    appliedSessionPort = settings.sessionPort;
+    await applySettings(settings, false);
     registerBridge();
     buildMenu();
     createTray();

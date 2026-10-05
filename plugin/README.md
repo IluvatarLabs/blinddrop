@@ -16,10 +16,29 @@ from a session the owner started and scoped.
 | Session context | `scripts/session-context.mjs` | `SessionStart`: tells the session which connections are live |
 | MCP server | `.mcp.json`, `scripts/session-headers.mjs` | Connects to the running session and supplies its Bearer header |
 
-The scripts are dependency-free Node ES modules. Node `^22.13.0 || >=23.5.0`,
-the same range the runtime requires.
+The scripts are dependency-free Node ES modules. The app-managed integration
+runs them with the app's bundled Electron runtime, so normal Mac use needs no
+external Node or shell PATH setup. Manual source installation requires Node
+`^22.13.0 || >=23.5.0`.
 
 ## Install
+
+In BlindDrop.app, open **Settings → Sessions**. Use
+**Install**, **Update** or **Remove** for Claude Code or local Codex. The app
+uses each host's native plugin commands and changes only its own local plugin.
+Unrelated plugins, skills, MCP servers and settings are preserved. The host
+must already be installed; any host trust approval and reload step appears in
+the integration's status. **Configured** means installed configuration, not a
+verified authenticated request.
+
+Keep **Agent access** enabled and unlock the vaults needed by the connection.
+The helper reads the current session capability; no token needs to be copied.
+A change to the session port updates the managed plugin. Follow the displayed
+reload instruction in the host. Update also repairs the managed integration
+after moving or replacing the app. Remove disables this integration without
+deleting vaults or connections.
+
+### Optional manual installation
 
 For one session, from a local checkout:
 
@@ -87,6 +106,12 @@ plugin cannot ship permission rules.
 
 ## Codex, Cursor, and other hosts
 
+The Mac app installs a native local Codex plugin containing the portable skill
+and the HTTP MCP definition with `http_headers_helper`. Claude Code uses
+`headersHelper`. Both run the bundled session helper. The Claude Code
+`PreToolUse` guard targets its Read/Edit/Write/Bash tools; do not assume that
+other hosts have identical tool hooks or guard coverage.
+
 The skill uses only the six portable Agent Skills frontmatter fields, so the
 same folder installs anywhere that reads the standard. Copy the directory
 unchanged:
@@ -96,10 +121,10 @@ cp -R plugin/skills/blinddrop ~/.agents/skills/blinddrop     # Codex
 cp -R plugin/skills/blinddrop .cursor/skills/blinddrop       # Cursor, per project
 ```
 
-Codex also reads `.agents/skills/` in the project directory. The hook and the
-MCP wiring are Claude Code formats; in another host, attach the session the way
-that host configures an HTTP MCP server, with the URL and Bearer token
-`blinddrop serve --http` prints.
+Codex also reads `.agents/skills/` in the project directory. Copying the skill
+alone provides instructions, not an MCP connection. Other hosts need their
+supported HTTP MCP configuration; the CLI's `blinddrop serve --http` prints a
+temporary URL and Bearer capability for manual use.
 
 ## What this does not do
 
@@ -117,7 +142,7 @@ the configured host permissions and the destination service is trusted with the
 credential it receives. This plugin adds guidance and friction on top of that
 boundary; it does not widen it.
 
-## Verified
+## Historical manual-plugin verification
 
 September 16, 2026, on macOS with Claude Code 2.1.273, codex-cli 0.147.0 and
 Node 26.7.0. A disposable HTTPS fixture, a scratch archive with a generated

@@ -8,7 +8,7 @@ BlindDrop, installed daemon, or interception certificate are required.
 
 ```mermaid
 flowchart LR
-    O[Owner terminal] -->|Unlock archive| F[BlindDrop session]
+    O[Owner app or terminal] -->|Unlock archive| F[BlindDrop session]
     V[Encrypted local archive] --> F
     A[SDK or MCP client] -->|Local URL + session token| F
     F -->|Existing authentication over HTTPS| P[Provider]
@@ -20,7 +20,15 @@ The harness/OS protects the owner context and helper. The provider receives
 its usual credential and must be trusted. These are the same assumptions as
 the [security policy](SECURITY.md).
 
-## First: put a key in the archive
+## Mac app: set up once
+
+Install **BlindDrop.app** from the [release page](https://github.com/IluvatarLabs/blinddrop/releases/latest), then create or open a vault. Choose a connection template, enter its credential in the owner window, and save. In **Settings → Sessions**, install the integration for Claude Code or local Codex. Follow the displayed host trust/reload instruction, then ask the agent to use the named connection. Normal Mac use needs no global CLI, Node installation, PATH changes or copied session token.
+
+Unlock the required vaults before agent use. Closing the window keeps the app and its current session running; the Dock or menu-bar icon reopens it. **Lock All** revokes access, and **Quit** ends the process. A new launch always starts locked.
+
+The app manages its integration's Install, Update and Remove controls and endpoint. A configured integration still needs its host to load it and the vault to be unlocked. Hooks provide guidance; they do not replace the host's permission boundary. See the [integration guide](plugin/README.md) for host behavior and the optional manual setup.
+
+## Optional CLI: put a key in the archive
 
 Install the release as described in [README](README.md#install). In your own
 terminal, initialize once, store a key at the hidden prompt, then name its
@@ -180,14 +188,14 @@ can keep the URL stable but does not make the token permanent. Repeat
 `list_connections` and `execute_http`. Existing stdio setup remains available
 in [CONFIGURATION.md](CONFIGURATION.md#agent-session).
 
-HTTP mode solves terminal-less clients' unlock problem by keeping owner
-unlock in the terminal. It does not provide a GUI or claim every GUI host
-has been tested. Browser JavaScript requests carrying `Origin` are rejected;
+This CLI mode keeps owner unlock in the terminal. The Mac app provides its
+own owner window; neither path implies that every GUI host has been tested.
+Browser JavaScript requests carrying `Origin` are rejected;
 this endpoint is for local clients, not a webpage API.
 
-## Claude Code plugin
+## Agent integrations
 
-Install the plugin from the `plugin/` directory: `claude --plugin-dir /path/to/plugin` for a local checkout, or add the repository as a marketplace as the [plugin README](plugin/README.md) describes. It registers the BlindDrop MCP server at `http://127.0.0.1:8787/mcp` with a headers helper that reads `~/.config/blinddrop/session.json`, ships a skill that tells the agent to use `list_connections` and `execute_http` instead of reading keys, and adds a hook that refuses direct reads of `.env`, key files and the vault directory with a reason pointing at the tool. Unlock the BlindDrop app, or the owner page, with the session file left on; alternatively run `blinddrop serve --http --allow CONNECTION --port 8787 --session-file ~/.config/blinddrop/session.json`. Claude Code connects on its next request. The same skill folder installs into Codex and Cursor by copying; the README lists the paths. Hooks and permission rules steer the model; they are not a security boundary, as [SECURITY.md](SECURITY.md) explains.
+Use the app's Agent Integrations controls for Claude Code and local Codex. They manage a local plugin through the host's native plugin commands, preserving unrelated configuration. The bundled helper reads the current session file and supplies session-use authority without exposing the provider key. Leave **Agent access** enabled in Settings. The default endpoint is `http://127.0.0.1:8787/mcp`; changing the port in the app updates its managed integration and may require the host reload shown there. Manual plugin/skill installation remains available in the [plugin guide](plugin/README.md). Hook support differs by host; the [security policy](SECURITY.md) defines the boundary.
 
 ## What fits, and what does not
 
@@ -227,7 +235,10 @@ blinddrop passwd
 `passwd` asks for the old passphrase and the new passphrase twice, then
 atomically re-encrypts the archive. Secrets and connection references stay
 the same. Existing encrypted backups still need their old passphrase.
-Copy the encrypted archive to back up its secrets; there is no recovery bypass
+In the app, **Back Up Setup** saves all registered encrypted vaults and their
+connection definitions, groups and settings. **Restore Setup** accepts that
+folder only into an empty installation, preserving each vault's passphrase.
+**Export Encrypted Vault** copies one archive only. There is no recovery bypass
 if its passphrase is lost. A complete app setup also needs `connections.json`
 and `vaults.json`, plus any wanted groups and settings. A standalone CLI archive
 needs its `.connections.json` sidecar. See the backup instructions in

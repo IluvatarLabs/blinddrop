@@ -32,31 +32,30 @@ subscription or hosted account to maintain.
 
 ## Install
 
-Requirements for the command-line package: Node.js 22.13+ on the 22.x line, or
-23.5+, and npm. Version 0.5.1 has been verified on macOS arm64; the earlier
-0.3.0 runtime was also tested on Linux. Windows is not verified.
+Download the Mac app from the [latest release](https://github.com/IluvatarLabs/blinddrop/releases/latest), move **BlindDrop.app** into Applications, and open it. The app includes its runtime: no Node installation, global CLI, PATH changes or terminal are needed. Check the release notes for the exact architecture and signing/notarization status of the downloadable build.
 
-Download `blinddrop-0.5.1.tgz` from the
-[v0.5.1 GitHub release](https://github.com/IluvatarLabs/blinddrop/releases/tag/v0.5.1),
-then install that file by its local path:
+1. Create a vault with a passphrase, or open an existing encrypted vault.
+2. Choose a connection template, enter its credential in the owner window, and save.
+3. Open **Settings → Sessions** and install the integration for Claude Code or local Codex. Follow the host trust/reload instruction shown there.
+4. Unlock the vaults the connection needs, then ask the agent to use that connection.
+
+Closing the window keeps the current session running. The Dock or menu-bar icon reopens it. **Lock All** revokes access, including with no window open; **Quit** stops the app. Every launch starts locked.
+
+To upgrade, quit BlindDrop, replace the app in Applications, then reopen it. Vaults and configuration stay outside the app bundle. Settings links to the release page; there is no automatic updater. If you move the app, use **Update** beside each installed integration to refresh its bundled-helper path.
+
+### Optional command-line package
+
+The CLI requires Node.js 22.13+ on the 22.x line or 23.5+, and npm. Download `blinddrop-0.6.0.tgz` from the release and install that file by its local path:
 
 ```sh
-npm install --global --prefix "$HOME/.local" ./blinddrop-0.5.1.tgz
+npm install --global --prefix "$HOME/.local" ./blinddrop-0.6.0.tgz
 export PATH="$HOME/.local/bin:$PATH"
 blinddrop --help
 ```
 
-This installs the command under your home directory on macOS and Linux.
-BlindDrop is not published to the npm registry; install the GitHub release
-tarball by its path. Add
-`$HOME/.local/bin` to your shell's PATH to keep the command available in new
-terminals.
+BlindDrop is not published to the npm registry. Install the release tarball by its path. These shell steps are only for CLI use. The native app targets macOS arm64; Windows/Linux 0.6.0 workflows are unverified.
 
-The release also includes `BlindDrop-darwin-arm64-0.5.1.zip`, containing the
-macOS app. It is for macOS arm64 only and is unsigned and not notarized. See the
-[macOS app guide](https://github.com/IluvatarLabs/blinddrop/blob/v0.5.1/desktop/README.md) for its behavior and source-build steps.
-
-## Quick start
+## Optional CLI quick start
 
 This example uses a GitHub personal access token to read your account. Create
 a token using GitHub's normal controls, then run these commands in your own
@@ -100,10 +99,7 @@ For another API, use its HTTPS origin and authentication format. See the
   and any unlocked session running from the menu bar; Quit ends the session.
   See the
   [configuration reference](CONFIGURATION.md#owner-gui).
-- The [BlindDrop plugin](plugin/README.md) for Claude Code adds a skill that
-  steers the agent to the vault, a hook that refuses direct reads of `.env` and
-  key files, and automatic attachment to a running session. The same skill
-  folder installs into Codex and Cursor.
+- App-managed [agent integrations](plugin/README.md) install, update and remove BlindDrop's Claude Code/local Codex plugin through each host's native plugin mechanism. Skills teach the workflow, supported hooks provide guidance, and authenticated MCP tools execute it. Configuration status is separate from a successful request. Unrelated host configuration is preserved.
 - `blinddrop run CONNECTION -- COMMAND ARGS…` runs a command with a local API
   endpoint and a temporary session token. Existing SDKs can use it if they let
   you configure their base URL and authentication header. Streaming is supported.
@@ -149,14 +145,9 @@ While a session started from the owner page or the app is running with the
 session-file option on, `session.json` holds that session's local URL and token
 at mode 0600 and is removed when the session ends.
 
-Back up every encrypted vault you need. The page's **Back up now…** action
-copies only the selected encrypted vault, not the separate connection or app
-configuration. To restore the complete app setup, retain `connections.json`,
-`vaults.json` (and adjust paths after moving machines), plus any wanted
-`groups.json` and `settings.json`. Each vault's passphrase is required to
-restore it; there is no recovery bypass. Stop active helpers before replacing
-keys or changing a passphrase. `blinddrop passwd` re-encrypts the selected
-vault; older backups still need their old passphrase.
+Use **Back Up Setup** to copy all registered encrypted vaults plus connection definitions, registry, groups and settings. Each vault retains its own passphrase. The other files are owner-only plaintext metadata and references; session tokens and Activity are excluded. A missing archive fails the backup instead of silently producing an incomplete copy.
+
+Use **Restore Setup** before setting up a new installation. It requires empty app state, rebases archive paths, and starts with every vault locked. It never merges or overwrites existing data. **Export Encrypted Vault** copies one archive only. There is no passphrase recovery bypass. `blinddrop passwd` re-encrypts the selected vault; older backups still need their old passphrase.
 
 BlindDrop protects credentials through its own interfaces. Your agent harness
 and operating system must restrict access to the vault's unlock input and the
@@ -172,12 +163,12 @@ prevent an agent from misusing an action its key permits. See the
 ## Documentation
 
 - [Client guide](CLIENTS.md) — connect MCP hosts, SDKs, and HTTP clients
-- [Plugin](plugin/README.md) — Claude Code plugin and the portable skill for Codex and Cursor
-- [macOS app](https://github.com/IluvatarLabs/blinddrop/blob/v0.5.1/desktop/README.md) — build the app that hosts the owner page
+- [Plugin](plugin/README.md) — app-managed Claude Code/local Codex integrations and manual skills
+- [macOS app](desktop/README.md) — build the app that hosts the owner page
 - [Configuration](CONFIGURATION.md) — authentication, connections, backup, and limits
 - [Fly.io](FLY.md) — set up and use a Fly connection
 - [OAuth](OAUTH.md) — browser consent and saved refresh grants
-- [Contributing](https://github.com/IluvatarLabs/blinddrop/blob/v0.5.1/CONTRIBUTING.md) — development and checks
+- [Contributing](CONTRIBUTING.md) — development and checks
 - [Security](SECURITY.md) — reporting and trust boundaries
 - [Changelog](CHANGELOG.md) — release history
 

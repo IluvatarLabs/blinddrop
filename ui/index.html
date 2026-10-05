@@ -759,6 +759,8 @@ body.app .mac-window.unlock { overflow: auto; }
           <div class="stackv" style="margin-top:18px">
             <button type="button" class="choice" data-tab="create"><i data-icon="plus"></i><span><b>Create a new vault</b></span><i class="chev" data-icon="chevron"></i></button>
             <button type="button" class="choice" data-tab="open"><i data-icon="folder"></i><span><b>Open an existing vault</b></span><i class="chev" data-icon="chevron"></i></button>
+            <button type="button" class="choice" id="restore-setup" data-action="restore-setup"><i data-icon="archive"></i><span><b>Restore a setup backup</b><small>Vaults remain locked with their own passphrases</small></span><i class="chev" data-icon="chevron"></i></button>
+            <span class="form-error" id="restore-err" role="alert" hidden></span>
           </div>
         </div>
         <div data-panel="create" hidden class="wizard">
@@ -830,13 +832,18 @@ body.app .mac-window.unlock { overflow: auto; }
       <div data-panel="general">
         <div class="pref-row"><span class="lbl">Appearance</span><div class="opts"><div class="seg" role="radiogroup"><button type="button" data-theme-set="system" role="radio">System</button><button type="button" data-theme-set="light" role="radio"><i data-icon="sun"></i>Light</button><button type="button" data-theme-set="dark" role="radio"><i data-icon="moon"></i>Dark</button></div></div></div>
         <div class="pref-row app-only" id="row-startup"><span class="lbl">Startup</span><div class="opts"><label class="opt"><button type="button" role="switch" aria-checked="false" aria-label="Open at login" data-setting="openAtLogin"></button><span>Open at login</span></label></div></div>
+        <div class="pref-sep"></div>
+        <div class="pref-row"><span class="lbl">Updates</span><div class="opts"><div class="opt"><button type="button" class="btn btn-sm" data-action="settings-open-release"><i data-icon="external"></i>Open release page…</button></div><span class="desc">Download the current Mac app, then replace this copy. Your vaults and settings stay where they are.</span></div></div>
       </div>
       <div data-panel="security" hidden id="panel-security">
         <div class="pref-row"><span class="lbl">Lock automatically</span><div class="opts"><label class="opt"><button type="button" role="switch" aria-checked="true" aria-label="Lock on sleep" data-setting="lockOnSleep"></button><span>When the Mac sleeps</span></label><label class="opt"><button type="button" role="switch" aria-checked="false" aria-label="Lock on screen lock" data-setting="lockOnScreenLock"></button><span>When the screen locks</span></label></div></div>
       </div>
       <div data-panel="sessions" hidden>
-        <div class="pref-row"><span class="lbl">Agent plugins</span><div class="opts"><label class="opt"><button type="button" role="switch" aria-checked="true" aria-label="Session file" data-setting="sessionFile"></button><span>Let plugins attach on their own <span class="mono" id="session-file-line"></span></span></label></div></div>
+        <div class="pref-row"><span class="lbl">Agent access</span><div class="opts"><label class="opt"><button type="button" role="switch" aria-checked="true" aria-label="Session file" data-setting="sessionFile"></button><span>Make unlocked sessions available to installed integrations <span class="mono" id="session-file-line"></span></span></label></div></div>
         <div class="pref-row"><span class="lbl">Port</span><div class="opts"><div class="opt"><input class="input mono" id="session-port" style="width:90px" aria-label="Port"></div><span class="err form-error" id="port-err" hidden></span></div></div>
+        <div class="pref-sep"></div>
+        <div class="pref-row"><span class="lbl">Claude Code</span><div class="opts" id="integration-claude"><span class="desc">Checking integration…</span></div></div>
+        <div class="pref-row"><span class="lbl">Codex</span><div class="opts" id="integration-codex"><span class="desc">Checking integration…</span></div></div>
       </div>
       <div data-panel="vault" hidden>
         <div id="vaults-panel"></div>
@@ -1302,7 +1309,9 @@ document.addEventListener('DOMContentLoaded', () => FK.hydrateIcons());
   };
   function fail(code, message) { const e = new Error(message); e.code = code; return e; }
 
-  const bridge = () => { if (FK.app && window.desktop.applySettings) window.desktop.applySettings({ openAtLogin: !!FK.settings.openAtLogin, lockOnSleep: !!FK.settings.lockOnSleep, lockOnScreenLock: !!FK.settings.lockOnScreenLock }); };
+  const bridge = () => FK.app && window.desktop.applySettings
+    ? window.desktop.applySettings({ openAtLogin: !!FK.settings.openAtLogin, lockOnSleep: !!FK.settings.lockOnSleep, lockOnScreenLock: !!FK.settings.lockOnScreenLock, sessionPort: FK.settings.sessionPort })
+    : Promise.resolve();
 
   let lastSignature = '';
   FK.load = async function (options) {
@@ -1333,11 +1342,12 @@ document.addEventListener('DOMContentLoaded', () => FK.hydrateIcons());
         return { vault: 'default', name: c.name, origin: c.origin, authType: c.authType, auth: d.auth || { type: 'none' }, tls: d.tls || null, enabled: d.enabled !== false, allowPrivate: !!d.allowPrivate, groups: (c.groups || []).slice(), missingRefs: c.missingRefs || [], inSession: !!c.inSession, lastUsed: c.lastUsed, lastOutcome: c.lastOutcome, example: null };
       });
       FK.connections.forEach(c => { c.example = FK.example(c); });
-      const gs = new Set(); FK.connections.forEach(c => c.groups.forEach(g => gs.add(g)));
+      const gs = new Set((list.groups || []).filter(g => typeof g === 'string' && g));
+      FK.connections.forEach(c => c.groups.forEach(g => gs.add(g)));
       FK.groups = [...gs].sort().map(g => ({ id: g, name: g }));
       FK.events = (activity.events || []).map(e => ({ t: new Date(e.timestamp), conn: e.connection, outcome: e.outcome, code: e.code, grant: e.grantId, vault: e.vault }));
     } else { FK.connections = []; FK.secretsByVault = {}; FK.secretList = []; FK.groups = []; FK.events = []; }
-    FK.applyTheme(); FK.chromeState(); bridge(); FK.render();
+    FK.applyTheme(); FK.chromeState(); void bridge().catch(() => { }); FK.render();
   };
   FK.anyUnlocked = () => FK.vaults.some(v => v.unlocked);
   FK.vaultExists = () => FK.vaults.some(v => v.exists);
@@ -1348,7 +1358,7 @@ document.addEventListener('DOMContentLoaded', () => FK.hydrateIcons());
 
   const channel = new BroadcastChannel('blinddrop-owner');
   FK.post = message => channel.postMessage(message);
-  FK.writeSettings = async function (partial) { FK.settings = await FK.api('/api/settings', partial); bridge(); FK.post({ type: 'settings' }); return FK.settings; };
+  FK.writeSettings = async function (partial) { FK.settings = await FK.api('/api/settings', partial); await bridge(); FK.post({ type: 'settings' }); return FK.settings; };
   FK.openSettings = function (tab) {
     if (FK.app && window.desktop.openSettings) { window.desktop.openSettings(tab || ''); return; }
     window.open(location.pathname + '?t=' + encodeURIComponent(TOKEN) + '&screen=settings&tab=' + encodeURIComponent(tab || 'general'));
@@ -1400,7 +1410,7 @@ document.addEventListener('DOMContentLoaded', () => FK.hydrateIcons());
     const m = event.data || {};
     if (m.type === 'settings' || m.type === 'lock-state') { FK.load().catch(() => { }); return; }
     if (FK.mode !== 'main') return;
-    if (m.type === 'open-vault') { if (FK.openVaultFlow) FK.openVaultFlow(); return; }
+    if (m.type === 'open-vault') { if (FK.sheets) FK.sheets.openVaultSheet('open'); return; }
     if (m.type === 'view' && FK.anyUnlocked()) { FK.screen('vault'); FK.goView(m.view); return; }
     if (m.type === 'import-json' && FK.anyUnlocked()) { FK.screen('vault'); FK.renderVault(); FK.sheets.openJson(); }
   };
@@ -1439,7 +1449,7 @@ document.addEventListener('DOMContentLoaded', () => FK.hydrateIcons());
     + '<dialog id="env-sheet" class="sheet wide" data-static><div class="sheet-head"><h2>Import a .env file</h2><span class="grow"></span><select class="select" id="env-vault" style="width:auto" aria-label="Vault"></select></div><div class="sheet-body"><div class="f"><div class="dropzone" id="env-drop">Drop a .env file here, <label class="link-btn" style="cursor:pointer">choose a file<input type="file" id="env-file" hidden></label>, or paste below.</div><textarea class="input-area" id="env-text" placeholder="STRIPE_SECRET_KEY=…" spellcheck="false"></textarea></div><div class="f" id="env-found" hidden><span class="lbl" id="env-count"></span><div class="env-table" id="env-rows"></div></div><label class="check" id="env-trash-wrap" hidden><input type="checkbox" id="env-trash" checked> Move the file to the Trash when done</label></div><div class="sheet-foot"><span class="left" id="env-note"></span><button type="button" class="btn" data-close>Cancel</button><button type="button" class="btn btn-primary" data-action="env-save" id="env-save" disabled>Import</button></div></dialog>'
     + '<dialog id="json-sheet" class="sheet wide" data-static><div class="sheet-head"><h2>Import a connection definition</h2><span class="grow"></span><select class="select" id="js-vault" style="width:auto" aria-label="Vault"></select></div><div class="sheet-body"><div class="f"><label for="js-name">Name</label><input class="input mono" id="js-name" spellcheck="false" style="max-width:280px"><span class="err" id="js-name-err" hidden></span></div><div class="f"><label for="js-text">Definition</label><textarea class="input-area" id="js-text" style="min-height:220px" spellcheck="false" placeholder=\'{ "origin": "https://api.example.com", "auth": { "type": "bearer", "secret": "my-secret#token" } }\'></textarea><span class="err" id="js-err" hidden></span></div></div><div class="sheet-foot"><button type="button" class="btn" data-close>Cancel</button><button type="button" class="btn btn-primary" data-action="js-save">Import</button></div></dialog>'
     + '<dialog id="group-sheet" data-static><div class="dialog-body stackv"><div class="dialog-title" id="gs-title">Add to group</div><div id="gs-list" class="stackv"></div><div class="f"><label for="gs-new">New group</label><input class="input mono" id="gs-new" placeholder="project-name" spellcheck="false"></div></div><div class="dialog-actions"><button type="button" class="btn" data-close>Cancel</button><button type="button" class="btn btn-primary" data-action="gs-save">Done</button></div></dialog>'
-    + '<dialog id="vault-sheet" data-static><div class="dialog-body stackv"><div class="dialog-title" id="vs-title">Add a vault</div><div class="seg" id="vs-mode" data-segmented role="group" aria-label="Mode"><button type="button" data-value="create" class="active">Create</button><button type="button" data-value="open">Open existing</button></div><div class="f"><label for="vs-name">Name</label><input class="input mono" id="vs-name" spellcheck="false" autocomplete="off"><span class="err" id="vs-name-err" hidden></span></div><div class="f"><label for="vs-path">Location</label><input class="input mono" id="vs-path" spellcheck="false" autocomplete="off"><span class="err" id="vs-path-err" hidden></span></div><div class="f" id="vs-pp-row"><label for="vs-pp">Passphrase</label><div class="input-wrap"><input class="input" type="password" id="vs-pp" autocomplete="new-password" spellcheck="false"><div class="input-actions"><button type="button" class="icon-btn" data-reveal="#vs-pp" aria-label="Show while typing"><i data-icon="eye"></i></button></div></div><div class="strength-line"><div class="meter" data-strength="#vs-pp"><i></i></div><span class="meter-label"></span></div></div></div><div class="dialog-actions"><button type="button" class="btn" data-close>Cancel</button><button type="button" class="btn btn-primary" data-action="vs-save" id="vs-save">Create vault</button></div></dialog>'
+    + '<dialog id="vault-sheet" data-static><div class="dialog-body stackv"><div class="dialog-title" id="vs-title">Add a vault</div><div class="seg" id="vs-mode" data-segmented role="group" aria-label="Mode"><button type="button" data-value="create" class="active">Create</button><button type="button" data-value="open">Open existing</button></div><div class="f"><label for="vs-name">Name</label><input class="input mono" id="vs-name" spellcheck="false" autocomplete="off"><span class="err" id="vs-name-err" hidden></span></div><div class="f"><label for="vs-path">Location</label><div style="display:flex;gap:8px"><input class="input mono" id="vs-path" spellcheck="false" autocomplete="off"><button type="button" class="btn" id="vs-choose" data-action="vs-choose">Choose…</button></div><span class="err" id="vs-path-err" hidden></span></div><div class="f" id="vs-pp-row"><label for="vs-pp">Passphrase</label><div class="input-wrap"><input class="input" type="password" id="vs-pp" autocomplete="new-password" spellcheck="false"><div class="input-actions"><button type="button" class="icon-btn" data-reveal="#vs-pp" aria-label="Show while typing"><i data-icon="eye"></i></button></div></div><div class="strength-line"><div class="meter" data-strength="#vs-pp"><i></i></div><span class="meter-label"></span></div><label for="vs-pp2">Confirm</label><input class="input" type="password" id="vs-pp2" autocomplete="new-password"><span class="err form-error" id="vs-pp-err" hidden></span></div></div><div class="dialog-actions"><button type="button" class="btn" data-close>Cancel</button><button type="button" class="btn btn-primary" data-action="vs-save" id="vs-save">Create vault</button></div></dialog>'
     + '<dialog id="unlock-vault" data-static><div class="dialog-body stackv"><div class="dialog-title" id="uv-title">Unlock vault</div><div class="input-wrap"><input class="input" type="password" id="uv-pass" placeholder="Passphrase" autofocus autocomplete="current-password"><div class="input-actions"><button type="button" class="icon-btn" data-reveal="#uv-pass" aria-label="Show while typing"><i data-icon="eye"></i></button></div></div><span class="err form-error" id="uv-err" hidden></span></div><div class="dialog-actions"><button type="button" class="btn" data-close>Cancel</button><button type="button" class="btn btn-primary" data-action="uv-unlock" id="uv-btn">Unlock</button></div></dialog>'
     + '<dialog id="confirm"><div class="dialog-body"><div class="dialog-title" id="cf-title"></div><div class="dialog-text" id="cf-text"></div></div><div class="dialog-actions"><button type="button" class="btn" data-close>Cancel</button><button type="button" class="btn btn-danger" data-action="cf-ok" id="cf-ok"></button></div></dialog>');
   FK.hydrateIcons(document.body);
@@ -1455,8 +1465,12 @@ document.addEventListener('DOMContentLoaded', () => FK.hydrateIcons());
   /* ── connection sheet ── */
   let D = null;
   const authSpecs = () => {
-    if (D.type === 'oauth2') return FK.SLOTSPEC.oauth2.filter(sp => !(sp.key === 'refreshSecret' && D.auth.grant === 'client_credentials')).filter(sp => !(sp.key === 'clientSecret' && D.auth.clientAuth === 'none'));
-    return FK.SLOTSPEC[D.type] || [];
+    let specs = D.type === 'oauth2'
+      ? FK.SLOTSPEC.oauth2.filter(sp => !(sp.key === 'refreshSecret' && D.auth.grant === 'client_credentials')).filter(sp => !(sp.key === 'clientSecret' && D.auth.clientAuth === 'none'))
+      : (FK.SLOTSPEC[D.type] || []);
+    if (D.templateOnly) specs = specs.filter(sp => sp.key === D.templateOnly);
+    if (D.templateLabel && specs.length === 1) specs = specs.map(sp => ({ ...sp, label: D.templateLabel, masked: D.templateOnly ? true : sp.masked, optional: D.templateOnly ? false : sp.optional }));
+    return specs;
   };
   function defaultSecretName() { return slug($('#cs-name') && $('#cs-name').value.trim()) || 'secret'; }
   function ensureSlot(scope, spec) {
@@ -1471,14 +1485,16 @@ document.addEventListener('DOMContentLoaded', () => FK.hydrateIcons());
     const exists = FK.secret(s.vault, s.secret);
     const others = exists ? FK.usedByConns(s.vault, s.secret).filter(c => !D.editing || c.name !== D.editing.name).map(c => c.name) : [];
     if (exists && !exists.fields.some(f => f.id === s.field) && exists.fields.length === 1) s.field = exists.fields[0].id;
+    const storedField = exists ? exists.fields.find(f => f.id === s.field) : null;
+    const shown = storedField ? { ...spec, label: storedField.label || spec.label, masked: storedField.masked, multiline: storedField.multiline } : spec;
     const available = exists ? exists.fields.map(f => ({ id: f.id, label: f.label })) : [{ id: s.field, label: spec.label }];
     if (!available.some(f => f.id === s.field)) available.unshift({ id: s.field, label: s.field });
     const vid = 'sv-' + scope + '-' + spec.key;
     const fieldPicker = '<select class="select slot-field" aria-label="Secret field" title="Field">' + available.map(f => '<option value="' + E(f.id) + '"' + (f.id === s.field ? ' selected' : '') + '>' + E(f.label || f.id) + '</option>').join('') + '</select>';
-    const val = spec.multiline
-      ? '<textarea class="input-area slot-val" id="' + vid + '" aria-label="' + E(spec.label) + ' value" placeholder="' + (exists ? 'Leave empty to keep' : 'Paste the value') + '" spellcheck="false">' + E(s.value || '') + '</textarea>'
-      : '<div class="input-wrap"><input class="input mono slot-val" id="' + vid + '" aria-label="' + E(spec.label) + ' value" type="' + (spec.masked ? 'password' : 'text') + '" value="' + E(s.value || '') + '" placeholder="' + (exists ? 'Leave empty to keep' : 'Paste the value') + '" autocomplete="off" spellcheck="false">' + (spec.masked ? '<div class="input-actions"><button type="button" class="icon-btn" data-reveal="#' + vid + '" aria-label="Show while typing"><i data-icon="eye"></i></button></div>' : '') + '</div>';
-    return '<div class="slot-wrap" data-scope="' + scope + '" data-slot="' + E(spec.key) + '"><div class="slot-row"><label class="lbl" for="' + vid + '">' + E(spec.label || spec.field) + (spec.optional ? ' <span class="muted">optional</span>' : '') + '</label><div class="slot-reference"><input class="input mono slot-secret" list="secret-names-' + E(s.vault) + '" value="' + E(s.secret || '') + '" placeholder="Secret name" spellcheck="false" aria-label="Secret name"><select class="select slot-vault" aria-label="Vault" title="Vault">' + vaultOptions(s.vault, true) + '</select>' + fieldPicker + '</div><div class="slot-valwrap">' + val + '</div></div>' + (exists && others.length ? '<div class="slot-hint">Also used by ' + E(others.join(', ')) + '.</div>' : '') + '</div>';
+    const val = shown.multiline
+      ? '<textarea class="input-area slot-val" id="' + vid + '" aria-label="' + E(shown.label) + ' value" placeholder="' + (exists ? 'Leave empty to keep' : 'Paste the value') + '" spellcheck="false">' + E(s.value || '') + '</textarea>'
+      : '<div class="input-wrap"><input class="input mono slot-val" id="' + vid + '" aria-label="' + E(shown.label) + ' value" type="' + (shown.masked ? 'password' : 'text') + '" value="' + E(s.value || '') + '" placeholder="' + (exists ? 'Leave empty to keep' : 'Paste the value') + '" autocomplete="off" spellcheck="false">' + (shown.masked ? '<div class="input-actions"><button type="button" class="icon-btn" data-reveal="#' + vid + '" aria-label="Show while typing"><i data-icon="eye"></i></button></div>' : '') + '</div>';
+    return '<div class="slot-wrap" data-scope="' + scope + '" data-slot="' + E(spec.key) + '"><div class="slot-row"><label class="lbl" for="' + vid + '">' + E(shown.label || spec.field) + (spec.optional ? ' <span class="muted">optional</span>' : '') + '</label><div class="slot-reference"><input class="input mono slot-secret" list="secret-names-' + E(s.vault) + '" value="' + E(s.secret || '') + '" placeholder="Secret name" spellcheck="false" aria-label="Secret name"><select class="select slot-vault" aria-label="Vault" title="Vault">' + vaultOptions(s.vault, true) + '</select>' + fieldPicker + '</div><div class="slot-valwrap">' + val + '</div></div>' + (exists && others.length ? '<div class="slot-hint">Also used by ' + E(others.join(', ')) + '.</div>' : '') + '</div>';
   }
   function bindRow(b, i) {
     const vid = 'bv-' + i;
@@ -1544,7 +1560,8 @@ document.addEventListener('DOMContentLoaded', () => FK.hydrateIcons());
         const gk = s.vault + '#' + s.secret, existing = FK.secret(s.vault, s.secret);
         const kept = {}; if (existing) existing.fields.forEach(f => { kept[f.id] = { label: f.label, masked: f.masked, multiline: f.multiline }; });
         const g = secrets[gk] || (secrets[gk] = { vault: s.vault, name: s.secret, type: existing ? existing.type : spec.type, fields: kept });
-        g.fields[ref.field] = { label: spec.label || ref.field, masked: !!spec.masked, multiline: !!spec.multiline, value: s.value }; known.add(refStr);
+        const prior = kept[ref.field];
+        g.fields[ref.field] = { label: prior ? prior.label : (spec.label || ref.field), masked: prior ? prior.masked : !!spec.masked, multiline: prior ? prior.multiline : !!spec.multiline, value: s.value }; known.add(refStr);
       }
       return refStr;
     };
@@ -1574,7 +1591,7 @@ document.addEventListener('DOMContentLoaded', () => FK.hydrateIcons());
     refreshDatalists();
     const uv = unlockedVaults();
     const cv = (conn && FK.slots(conn)[0] ? FK.slots(conn)[0].ref.vault : null) || (uv[0] ? uv[0].name : (FK.defaultVault() || {}).name);
-    D = { editing: conn || null, type: conn ? conn.auth.type : 'bearer', vault: cv, auth: {}, tls: {}, tlsOn: !!(conn && conn.tls), bindings: [{ in: 'header', name: '', prefix: '', vault: cv, secret: '', value: '' }], groups: new Set(conn ? conn.groups : []), slots: {} };
+    D = { editing: conn || null, type: conn ? conn.auth.type : 'bearer', vault: cv, auth: {}, tls: {}, tlsOn: !!(conn && conn.tls), bindings: [{ in: 'header', name: '', prefix: '', vault: cv, secret: '', value: '' }], groups: new Set(conn ? conn.groups : []), slots: {}, templateOnly: null, templateLabel: '' };
     $('#cs-vault').innerHTML = vaultOptions(cv, true);
     $('#cs-vault').closest('label').hidden = !!conn;
     $('#cs-title').textContent = conn ? 'Edit ' + conn.name : 'New connection';
@@ -1594,16 +1611,17 @@ document.addEventListener('DOMContentLoaded', () => FK.hydrateIcons());
     if (t.origin) $('#cs-origin').value = t.origin;
     if (!$('#cs-name').value && t.id !== 'custom') $('#cs-name').value = t.id;
     const ap = t.apply;
+    D.templateOnly = ap.only || null;
+    D.templateLabel = t.fieldLabel || '';
     if (ap.name) D.auth.name = ap.name;
     if (ap.region) D.auth.region = ap.region; if (ap.service) D.auth.service = ap.service;
     if (ap.grant) D.auth.grant = ap.grant; if (ap.tokenEndpoint) D.auth.tokenEndpoint = ap.tokenEndpoint; if (ap.clientAuth) D.auth.clientAuth = ap.clientAuth; if (ap.scope != null) D.auth.scope = ap.scope;
     if (ap.bindings) D.bindings = ap.bindings.map(b => ({ in: b.in, name: b.name || '', prefix: b.prefix || '', vault: D.vault, secret: slug($('#cs-name').value.trim() || t.id), value: '' }));
-    if (ap.only) { authSpecs().forEach(sp => { if (sp.key !== ap.only) D.slots['auth:' + sp.key] = { vault: D.vault, secret: '', field: sp.field, value: '' }; }); }
   }
   const sheet = $('#conn-sheet');
   sheet.addEventListener('click', e => {
     const a = e.target.closest('[data-auth]');
-    if (a) { readConfig(); readSlots(); D.type = a.dataset.auth; renderTypeParts(); return; }
+    if (a) { readConfig(); readSlots(); D.type = a.dataset.auth; D.templateOnly = null; D.templateLabel = ''; renderTypeParts(); return; }
     const g = e.target.closest('[data-cs-group]');
     if (g) { const id = g.dataset.csGroup; if (D.groups.has(id)) D.groups.delete(id); else D.groups.add(id); g.classList.toggle('active'); g.setAttribute('aria-pressed', D.groups.has(id)); return; }
     if (e.target.closest('#cs-more-btn')) { const m = $('#cs-auth-more'); m.hidden = !m.hidden; $('#cs-more-btn').classList.toggle('on', !m.hidden); $('#cs-more-btn').setAttribute('aria-expanded', !m.hidden); }
@@ -1786,6 +1804,42 @@ document.addEventListener('DOMContentLoaded', () => FK.hydrateIcons());
 
   /* ── vault create / open ── */
   let vsMode = 'create';
+  const vaultBase = path => String(path || '').split(/[\\/]/).pop();
+  const vaultNameFromPath = path => (vaultBase(path) || 'vault').replace(/\.enc$/, '').replace(/[^A-Za-z0-9._-]/g, '-') || 'default';
+  function nextVaultName() {
+    if (!FK.vaults.some(v => v.name === 'default' && v.exists)) return 'default';
+    let name = 'vault', i = 2;
+    while (FK.vaults.some(v => v.name === name)) name = 'vault-' + i++;
+    return name;
+  }
+  function defaultVaultPath(name) {
+    const registered = FK.vaults.find(v => v.name === name && v.path);
+    if (registered && !registered.exists) return registered.path;
+    const root = String(FK.state.configDir || '').replace(/\/$/, '');
+    return root + '/' + (name === 'default' ? 'vault' : name) + '.enc';
+  }
+  function validateVaultFlow(mode, input) {
+    const name = (input.name || '').trim() || (mode === 'create' ? nextVaultName() : vaultNameFromPath(input.path));
+    const path = (input.path || '').trim();
+    const nameIssue = nameError(name);
+    if (nameIssue) return { ok: false, field: 'name', message: nameIssue };
+    if (FK.vaults.some(v => v.name === name && v.exists)) return { ok: false, field: 'name', message: 'A vault with this name is already registered.' };
+    if (!path) return { ok: false, field: 'path', message: 'Choose a vault file.' };
+    if (mode === 'create' && !input.passphrase) return { ok: false, field: 'passphrase', message: 'Enter a passphrase.' };
+    if (mode === 'create' && input.passphrase !== input.confirm) return { ok: false, field: 'passphrase', message: 'The two entries do not match.' };
+    return { ok: true, name, path };
+  }
+  async function runVaultFlow(mode, input) {
+    const checked = validateVaultFlow(mode, input);
+    if (!checked.ok) return checked;
+    try {
+      if (mode === 'create') await FK.api('/api/vault/create', { name: checked.name, path: checked.path, passphrase: input.passphrase });
+      else await FK.api('/api/vault/open', { name: checked.name, path: checked.path });
+      await FK.load();
+      return { ok: true, name: checked.name, path: checked.path };
+    } catch (error) { return { ok: false, field: 'form', message: error.message }; }
+  }
+  FK.vaultFlow = { run: runVaultFlow, nameFromPath: vaultNameFromPath, nextName: nextVaultName, defaultPath: defaultVaultPath };
   function openVaultSheet(mode) {
     vsMode = mode || 'create';
     $$('#vs-mode button').forEach(b => { const on = b.dataset.value === vsMode; b.classList.toggle('active', on); b.setAttribute('aria-pressed', on); });
@@ -1793,23 +1847,42 @@ document.addEventListener('DOMContentLoaded', () => FK.hydrateIcons());
     $('#vs-title').textContent = vsMode === 'create' ? 'Create a vault' : 'Open a vault';
     $('#vs-save').textContent = vsMode === 'create' ? 'Create vault' : 'Open vault';
     $('#vs-pp-row').hidden = vsMode !== 'create';
-    $('#vs-name').value = ''; $('#vs-path').value = (FK.state.configDir || '') + '/'; $('#vs-pp').value = '';
+    const name = vsMode === 'create' ? nextVaultName() : '';
+    $('#vs-name').value = name; $('#vs-path').value = vsMode === 'create' ? defaultVaultPath(name) : ''; $('#vs-pp').value = ''; $('#vs-pp2').value = '';
+    $('#vs-path').readOnly = FK.app; $('#vs-choose').hidden = !FK.app;
     $('#vs-pp').dispatchEvent(new Event('input'));
-    err('#vs-name-err', ''); err('#vs-path-err', '');
+    err('#vs-name-err', ''); err('#vs-path-err', ''); err('#vs-pp-err', '');
     FK.openDialog('#vault-sheet'); $('#vs-name').focus();
   }
   $('#vs-mode').addEventListener('fk:segment', e => openVaultSheetKeep(e.detail));
-  function openVaultSheetKeep(mode) { vsMode = mode; $('#vs-title').textContent = mode === 'create' ? 'Create a vault' : 'Open a vault'; $('#vs-save').textContent = mode === 'create' ? 'Create vault' : 'Open vault'; $('#vs-pp-row').hidden = mode !== 'create'; }
-  function saveVaultSheet() {
-    const name = $('#vs-name').value.trim(), path = $('#vs-path').value.trim();
-    let bad = err('#vs-name-err', nameError(name) || (FK.vaults.some(v => v.name === name) ? 'A vault with this name is already registered.' : ''));
-    bad = err('#vs-path-err', path ? '' : 'Enter a file location.') || bad; if (bad) return;
-    if (vsMode === 'create') {
-      const pp = $('#vs-pp').value; if (!pp) { err('#vs-path-err', ''); err('#vs-name-err', 'Enter a passphrase.'); return; }
-      FK.did(async () => { await FK.api('/api/vault/create', { name, path, passphrase: pp }); $('#vs-pp').value = ''; $('#vault-sheet').close(); }, 'Vault ' + name + ' created');
-    } else {
-      FK.did(async () => { await FK.api('/api/vault/open', { name, path }); $('#vault-sheet').close(); }, 'Vault ' + name + ' added', 'Unlock it to see its secrets');
-    }
+  function openVaultSheetKeep(mode) {
+    vsMode = mode; $('#vs-title').textContent = mode === 'create' ? 'Create a vault' : 'Open a vault'; $('#vs-save').textContent = mode === 'create' ? 'Create vault' : 'Open vault'; $('#vs-pp-row').hidden = mode !== 'create';
+    const name = mode === 'create' ? nextVaultName() : '';
+    $('#vs-name').value = name; $('#vs-path').value = mode === 'create' ? defaultVaultPath(name) : ''; $('#vs-pp').value = ''; $('#vs-pp2').value = '';
+    err('#vs-name-err', ''); err('#vs-path-err', ''); err('#vs-pp-err', '');
+  }
+  $('#vs-name').addEventListener('input', e => { if (vsMode === 'create' && !$('#vs-path').dataset.chosen) $('#vs-path').value = defaultVaultPath(e.target.value.trim() || nextVaultName()); });
+  $('#vault-sheet').addEventListener('close', () => { $('#vs-pp').value = ''; $('#vs-pp2').value = ''; delete $('#vs-path').dataset.chosen; });
+  async function chooseVaultSheetPath() {
+    if (!FK.app || !window.desktop.chooseVault) return;
+    const path = await window.desktop.chooseVault(vsMode === 'create' ? 'create' : 'open');
+    if (!path) return;
+    $('#vs-path').value = path; $('#vs-path').dataset.chosen = 'true';
+    if (vsMode === 'open' && !$('#vs-name').value.trim()) $('#vs-name').value = vaultNameFromPath(path);
+  }
+  async function saveVaultSheet() {
+    const mode = vsMode, save = $('#vs-save'); save.disabled = true;
+    const result = await runVaultFlow(mode, { name: $('#vs-name').value, path: $('#vs-path').value, passphrase: $('#vs-pp').value, confirm: $('#vs-pp2').value });
+    save.disabled = false;
+    err('#vs-name-err', result.ok || result.field !== 'name' ? '' : result.message);
+    err('#vs-path-err', result.ok || !['path', 'form'].includes(result.field) ? '' : result.message);
+    err('#vs-pp-err', result.ok || result.field !== 'passphrase' ? '' : result.message);
+    if (!result.ok) return;
+    const usePrimaryUnlock = mode === 'open' && FK.mode === 'main' && !FK.anyUnlocked();
+    if (usePrimaryUnlock && FK.selectUnlockVault) FK.selectUnlockVault(result.name);
+    $('#vault-sheet').close(); FK.go();
+    if (mode === 'open' && !usePrimaryUnlock) FK.sheets.openUnlock(result.name);
+    FK.toast(mode === 'create' ? 'Vault ' + result.name + ' created' : 'Vault ' + result.name + ' added');
   }
 
   /* ── unlock a vault ── */
@@ -1834,6 +1907,7 @@ document.addEventListener('DOMContentLoaded', () => FK.hydrateIcons());
     if (n === 'env-save') saveEnv();
     if (n === 'js-save') saveJson();
     if (n === 'gs-save') saveGroup();
+    if (n === 'vs-choose') void chooseVaultSheetPath();
     if (n === 'vs-save') saveVaultSheet();
     if (n === 'uv-unlock') doUnlock();
     if (n === 'cf-ok') { $('#confirm').close(); if (confirmFn) confirmFn(); confirmFn = null; }
@@ -2070,6 +2144,7 @@ document.addEventListener('DOMContentLoaded', () => FK.hydrateIcons());
     $('#unlock-list').innerHTML = existing.map(v => '<button type="button" class="vault-row' + (v.name === target ? ' current' : '') + '" data-unlock-pick="' + E(v.name) + '"><i data-icon="' + (v.unlocked ? 'unlock' : 'lock') + '"></i><span>' + E(v.name) + '<div class="sub">' + E(v.path) + '</div></span><span>' + (v.unlocked ? '<span class="pill pill-good">Unlocked</span>' : '') + '</span></button>').join('');
     FK.hydrateIcons($('#unlock-list'));
   };
+  FK.selectUnlockVault = name => { target = name; };
   $('#unlock-list').addEventListener('click', e => { const b = e.target.closest('[data-unlock-pick]'); if (!b) return; target = b.dataset.unlockPick; er.hidden = true; FK.renderUnlock(); pw.focus(); });
   FK.lock = async function () {
     const unlocked = FK.vaults.filter(v => v.unlocked);
@@ -2097,17 +2172,22 @@ document.addEventListener('DOMContentLoaded', () => FK.hydrateIcons());
   const $ = FK.$, E = FK.esc;
   const root = $('#welcome-tabs');
   const pp = $('#pp'), pp2 = $('#pp2'), mis = $('#pp-mismatch'), ack = $('#ack'), btn = $('#create-btn');
-  const base = p => String(p).split('/').pop();
+  const base = p => String(p).split(/[\\/]/).pop();
   const check = () => { mis.hidden = !(pp2.value && pp.value !== pp2.value); btn.disabled = !(ack.checked && pp.value && pp.value === pp2.value); };
   [pp, pp2].forEach(i => i.addEventListener('input', check)); ack.addEventListener('change', check);
   const err = (id, m) => { const e = $(id); e.textContent = m || ''; e.hidden = !m; };
-  const nameFromPath = p => (base(p) || 'vault').replace(/\.enc$/, '').replace(/[^A-Za-z0-9._-]/g, '-') || 'default';
+
+  $('#create-name').addEventListener('input', e => {
+    if (!$('#create-path').dataset.chosen) $('#create-path').value = FK.vaultFlow.defaultPath(e.target.value.trim() || 'default');
+  });
+  $('#create-path').addEventListener('input', e => { e.target.dataset.chosen = 'true'; });
 
   FK.renderWelcome = function () {
-    const fallback = (FK.state.configDir || '') + '/vault.enc';
+    const fallback = (FK.defaultVault() || {}).path || (FK.state.configDir || '') + '/vault.enc';
     if (!$('#create-path').value) $('#create-path').value = fallback;
-    if (!$('#create-name').value) $('#create-name').value = FK.vaults.length && !FK.vaults.some(v => v.name === 'default' && !v.exists) ? '' : 'default';
+    if (!$('#create-name').value) $('#create-name').value = 'default';
     $('#create-path').readOnly = FK.app; $('#create-choose').hidden = !FK.app; $('#vault-drop').hidden = !FK.app;
+    $('#open-path-row').hidden = FK.app;
     if (!$('#open-path').value) $('#open-path').value = (FK.defaultVault() || {}).path || fallback;
     if (!$('#open-name').value) $('#open-name').value = 'default';
     const recents = FK.settings.recentVaults || [];
@@ -2115,23 +2195,28 @@ document.addEventListener('DOMContentLoaded', () => FK.hydrateIcons());
     box.innerHTML = recents.map(p => '<button type="button" class="device" data-recent="' + E(p) + '"><i data-icon="lock"></i><div>' + E(base(p)) + '<div class="desc mono">' + E(p) + '</div></div><span></span></button>').join('');
     FK.hydrateIcons(box);
   };
-  FK.openVaultFlow = function (mode) { FK.screen('welcome'); FK.renderWelcome(); err('#open-err', ''); err('#create-err', ''); FK.selectTab(root, mode === 'create' ? 'create' : 'open'); };
-
   async function openAt(path, name) {
     err('#open-err', '');
-    try { await FK.api('/api/vault/open', { name: name || nameFromPath(path), path }); await FK.load(); FK.go(); }
-    catch (error) { err('#open-err', error.message); }
+    const targetName = name || FK.vaultFlow.nameFromPath(path);
+    const result = await FK.vaultFlow.run('open', { name: targetName, path });
+    if (!result.ok) { err('#open-err', result.message); return; }
+    if (FK.selectUnlockVault) FK.selectUnlockVault(result.name);
+    FK.go();
   }
   async function create() {
-    const path = $('#create-path').value.trim(); const name = $('#create-name').value.trim() || 'default';
-    if (!path) { $('#create-path').focus(); return; }
-    if (FK.nameError(name)) { err('#create-err', FK.nameError(name)); return; }
     err('#create-err', ''); btn.disabled = true;
-    try {
-      await FK.api('/api/vault/create', { name, path, passphrase: pp.value });
-      pp.value = ''; pp2.value = ''; ack.checked = false; pp.dispatchEvent(new Event('input')); check();
-      await FK.load(); FK.go();
-    } catch (error) { err('#create-err', error.message); check(); }
+    const result = await FK.vaultFlow.run('create', { name: $('#create-name').value.trim() || 'default', path: $('#create-path').value, passphrase: pp.value, confirm: pp2.value });
+    if (!result.ok) { err('#create-err', result.message); check(); return; }
+    pp.value = ''; pp2.value = ''; ack.checked = false; pp.dispatchEvent(new Event('input')); check();
+    FK.go();
+  }
+  async function restoreSetup() {
+    err('#restore-err', '');
+    if (!FK.app || !window.desktop.chooseSetupFolder) { err('#restore-err', 'Restore setup is available in the BlindDrop Mac app.'); return; }
+    const path = await window.desktop.chooseSetupFolder('restore');
+    if (!path) return;
+    try { await FK.api('/api/setup/restore', { path }); await FK.load(); FK.go(); FK.toast('Setup restored', 'Unlock each vault with its own passphrase'); }
+    catch (error) { err('#restore-err', error.message); }
   }
   document.addEventListener('click', e => { if (FK.current !== 'welcome') return; const r = e.target.closest('[data-recent]'); if (r) openAt(r.dataset.recent); });
   const drop = $('#vault-drop');
@@ -2140,9 +2225,10 @@ document.addEventListener('DOMContentLoaded', () => FK.hydrateIcons());
   document.addEventListener('fk:action', async e => {
     const n = e.detail.name;
     if (FK.current === 'welcome') {
+      if (n === 'restore-setup') return restoreSetup();
       if (n === 'create-vault') return create();
       if (n === 'open-path') return openAt($('#open-path').value.trim(), $('#open-name').value.trim());
-      if (n === 'choose-create-path') { const p = await window.desktop.chooseVault('create'); if (p) $('#create-path').value = p; return; }
+      if (n === 'choose-create-path') { const p = await window.desktop.chooseVault('create'); if (p) { $('#create-path').value = p; $('#create-path').dataset.chosen = 'true'; } return; }
       if (n === 'choose-open-path') { const p = await window.desktop.chooseVault('open'); if (p) openAt(p); return; }
     }
   });
@@ -2156,6 +2242,50 @@ document.addEventListener('DOMContentLoaded', () => FK.hydrateIcons());
   const err = (id, m) => { const e = $(id); e.textContent = m || ''; e.hidden = !m; };
   const day = t => new Date(t).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
   let ppVault = null;
+  let integrations = null, integrationsLoading = false, integrationsLoaded = false, managingHost = null;
+  const integrationErrors = {};
+
+  function integrationHTML(host) {
+    if (!FK.app) return '<span class="desc">Manage this integration from Settings in the BlindDrop Mac app.</span>';
+    if (integrationsLoading && !integrations) return '<span class="desc">Checking integration…</span>';
+    if (!integrations || !integrations[host]) return '<span class="desc">Integration status is unavailable.</span>';
+    const s = integrations[host], busy = managingHost === host;
+    const state = s.state === 'unavailable' ? (s.hostAvailable ? 'Status unavailable' : 'Host not found') : s.state === 'not-installed' ? 'Not installed' : s.state === 'update-available' ? 'Update available' : 'Configured';
+    const version = s.installedVersion ? ' · ' + E(s.installedVersion) : '';
+    const actions = [];
+    if (s.actions && s.actions.install) actions.push('<button type="button" class="btn btn-sm" data-integration-host="' + E(host) + '" data-integration-action="install"' + (busy ? ' disabled' : '') + '>Install</button>');
+    if (s.actions && s.actions.update) actions.push('<button type="button" class="btn btn-sm" data-integration-host="' + E(host) + '" data-integration-action="update"' + (busy ? ' disabled' : '') + '>Update</button>');
+    if (s.actions && s.actions.remove) actions.push('<button type="button" class="btn btn-sm btn-danger" data-integration-host="' + E(host) + '" data-integration-action="remove"' + (busy ? ' disabled' : '') + '>Remove</button>');
+    return '<div class="opt"><span class="pill' + (s.configured ? ' pill-good' : '') + '">' + E(state) + version + '</span>' + (s.trustRequired ? '<span class="pill pill-warning">Approval required</span>' : '') + '</div>'
+      + '<span class="desc">' + E(s.guidance || '') + '</span>'
+      + (integrationErrors[host] ? '<span class="err form-error">' + E(integrationErrors[host]) + '</span>' : '')
+      + (actions.length ? '<div class="opt">' + actions.join('') + '</div>' : '');
+  }
+  function renderIntegrations() {
+    $('#integration-claude').innerHTML = integrationHTML('claude');
+    $('#integration-codex').innerHTML = integrationHTML('codex');
+  }
+  async function loadIntegrations() {
+    if (!FK.app || integrationsLoading || integrationsLoaded) return;
+    integrationsLoading = true; renderIntegrations();
+    try { integrations = await window.desktop.getIntegrations(); }
+    catch (error) { integrations = null; integrationErrors.claude = integrationErrors.codex = error.message || 'Could not read integration status.'; }
+    integrationsLoading = false; integrationsLoaded = true; renderIntegrations();
+  }
+  async function manageIntegration(host, action) {
+    if (!FK.app || !window.desktop.manageIntegration || managingHost) return;
+    managingHost = host; delete integrationErrors[host]; renderIntegrations();
+    try {
+      const result = await window.desktop.manageIntegration({ host, action });
+      if (result && result.status) {
+        integrations = integrations || {};
+        integrations[host] = result.status;
+      }
+      if (!result || !result.ok) integrationErrors[host] = result && result.error ? result.error.message : 'The integration could not be changed.';
+      else FK.toast(action === 'remove' ? 'Integration removed' : action === 'update' ? 'Integration updated' : 'Integration installed');
+    } catch (error) { integrationErrors[host] = error.message || 'The integration could not be changed.'; }
+    managingHost = null; renderIntegrations();
+  }
 
   root.addEventListener('fk:tab', e => { $('#win-title').textContent = NAMES[e.detail] || 'Settings'; document.title = FK.appName + ' — Settings · ' + (NAMES[e.detail] || ''); });
 
@@ -2169,22 +2299,27 @@ document.addEventListener('DOMContentLoaded', () => FK.hydrateIcons());
     $('#session-file-line').textContent = FK.state.sessionFilePath || '';
     if (document.activeElement !== $('#session-port')) $('#session-port').value = FK.settings.sessionPort;
     renderVaults();
+    renderIntegrations();
+    void loadIntegrations();
   };
   function renderVaults() {
     const rows = FK.vaults.map(v => {
       const st = v.unlocked ? 'Unlocked' : v.exists ? 'Locked' : 'Not created';
       const acts = [];
       if (FK.app) acts.push('<button type="button" class="btn btn-sm" data-reveal-path="' + E(v.path) + '">Reveal in Finder</button>');
-      if (v.unlocked) { acts.push('<button type="button" class="btn btn-sm" data-vault-lock="' + E(v.name) + '">Lock</button>'); acts.push('<button type="button" class="btn btn-sm" data-set-pp="' + E(v.name) + '">Change passphrase…</button>'); acts.push((FK.app ? '' : '<input class="input mono" data-backup-path="' + E(v.name) + '" value="' + E(v.path + '.backup') + '" aria-label="Backup file for ' + E(v.name) + '" style="width:100%">') + '<button type="button" class="btn btn-sm" data-backup="' + E(v.name) + '">Back up…</button>'); }
+      if (v.unlocked) { acts.push('<button type="button" class="btn btn-sm" data-vault-lock="' + E(v.name) + '">Lock</button>'); acts.push('<button type="button" class="btn btn-sm" data-set-pp="' + E(v.name) + '">Change passphrase…</button>'); acts.push((FK.app ? '' : '<input class="input mono" data-backup-path="' + E(v.name) + '" value="' + E(v.path + '.backup') + '" aria-label="Export file for ' + E(v.name) + '" style="width:100%">') + '<button type="button" class="btn btn-sm" data-backup="' + E(v.name) + '">Export encrypted vault…</button>'); }
       else if (v.exists) acts.push('<button type="button" class="btn btn-sm" data-vault-unlock="' + E(v.name) + '">Unlock…</button>');
       if (v.name !== 'default') acts.push('<button type="button" class="btn btn-sm btn-danger" data-remove-vault="' + E(v.name) + '">Remove</button>');
       return '<div class="pref-row"><span class="lbl">' + E(v.name) + '</span><div class="opts"><div class="mono" style="font-size:12px">' + E(v.path) + '</div><div class="opt"><span class="desc">' + st + '</span></div><div class="opt">' + acts.join('') + '</div></div></div>';
     }).join('<div class="pref-sep"></div>');
-    $('#vaults-panel').innerHTML = rows + '<div class="pref-row"><span class="lbl"></span><div class="opts"><div class="opt"><button type="button" class="btn" data-action="settings-add-vault"><i data-icon="plus"></i>Add or open a vault…</button></div></div></div><div class="pref-sep"></div><div class="pref-row"><span class="lbl">Last backup</span><div class="opts"><span class="desc">' + (FK.settings.lastBackupAt ? E(day(FK.settings.lastBackupAt)) : 'Never') + '</span></div></div><div class="pref-sep"></div><div class="pref-row"><span class="lbl">Activity log</span><div class="opts"><div class="mono" style="font-size:12px">' + E(FK.state.logPath || '') + '</div><div class="opt">' + (FK.app ? '<button type="button" class="btn btn-sm" data-reveal-path="' + E(FK.state.logPath || '') + '">Reveal in Finder</button>' : '') + '<button type="button" class="btn btn-sm" data-action="settings-open-activity">Open Activity</button></div></div></div>';
+    const setupAction = FK.app
+      ? '<div class="opt"><button type="button" class="btn" id="backup-setup" data-action="settings-backup-setup"><i data-icon="archive"></i>Back up setup…</button></div>'
+      : '<span class="desc">Use the BlindDrop Mac app to choose a backup folder.</span>';
+    $('#vaults-panel').innerHTML = rows + '<div class="pref-row"><span class="lbl"></span><div class="opts"><div class="opt"><button type="button" class="btn" data-action="settings-add-vault"><i data-icon="plus"></i>Add or open a vault…</button></div></div></div><div class="pref-sep"></div><div class="pref-row"><span class="lbl">Setup backup</span><div class="opts">' + setupAction + '<span class="desc">Copies every encrypted vault plus connection references, registry, groups and settings. Vaults keep separate passphrases; the other files remain owner-only plaintext metadata. Sessions and Activity are excluded.</span></div></div><div class="pref-row"><span class="lbl">Last vault export</span><div class="opts"><span class="desc">' + (FK.settings.lastBackupAt ? E(day(FK.settings.lastBackupAt)) : 'Never') + '</span></div></div><div class="pref-sep"></div><div class="pref-row"><span class="lbl">Activity log</span><div class="opts"><div class="mono" style="font-size:12px">' + E(FK.state.logPath || '') + '</div><div class="opt">' + (FK.app ? '<button type="button" class="btn btn-sm" data-reveal-path="' + E(FK.state.logPath || '') + '">Reveal in Finder</button>' : '') + '<button type="button" class="btn btn-sm" data-action="settings-open-activity">Open Activity</button></div></div></div>';
     FK.hydrateIcons($('#vaults-panel'));
   }
   document.addEventListener('fk:switch', e => { const b = e.target.closest('[data-setting]'); if (!b) return; const patch = {}; patch[b.dataset.setting] = e.detail; FK.writeSettings(patch).then(FK.renderSettings).catch(error => { FK.toast(error.message); FK.renderSettings(); }); });
-  $('#session-port').addEventListener('change', e => { const n = Number(e.target.value.trim()); if (!Number.isInteger(n) || n < 1 || n > 65535) { err('#port-err', 'Use a port number from 1 to 65535.'); return; } err('#port-err', ''); FK.writeSettings({ sessionPort: n }).then(FK.renderSettings).catch(error => err('#port-err', error.message)); });
+  $('#session-port').addEventListener('change', e => { const n = Number(e.target.value.trim()); if (!Number.isInteger(n) || n < 1 || n > 65535) { err('#port-err', 'Use a port number from 1 to 65535.'); return; } err('#port-err', ''); FK.writeSettings({ sessionPort: n }).then(async () => { integrations = null; integrationsLoaded = false; await loadIntegrations(); FK.renderSettings(); }).catch(error => err('#port-err', error.message)); });
 
   async function backup(vault) {
     const v = FK.vaults.find(x => x.name === vault); if (!v) return;
@@ -2192,7 +2327,14 @@ document.addEventListener('DOMContentLoaded', () => FK.hydrateIcons());
     let path = input ? input.value.trim() : v.path + '.backup';
     if (!path) { if (input) input.focus(); return; }
     if (FK.app) { path = await window.desktop.chooseVault('backup'); if (!path) return; }
-    try { const done = await FK.api('/api/vault/backup', { vault, path }); await FK.load(); FK.toast('Backup saved', done && done.path); }
+    try { const done = await FK.api('/api/vault/backup', { vault, path }); await FK.load(); FK.toast('Encrypted vault exported', done && done.path); }
+    catch (error) { FK.toast(error.message); }
+  }
+  async function backupSetup() {
+    if (!FK.app || !window.desktop.chooseSetupFolder) { FK.toast('Use the BlindDrop Mac app to choose a backup folder.'); return; }
+    const path = await window.desktop.chooseSetupFolder('backup');
+    if (!path) return;
+    try { const done = await FK.api('/api/setup/backup', { path }); FK.toast('Setup backup saved', done ? done.vaults + (done.vaults === 1 ? ' vault' : ' vaults') : ''); }
     catch (error) { FK.toast(error.message); }
   }
   async function changePassphrase() {
@@ -2205,6 +2347,7 @@ document.addEventListener('DOMContentLoaded', () => FK.hydrateIcons());
   }
   document.addEventListener('click', e => {
     if (FK.mode !== 'settings') return;
+    const integration = e.target.closest('[data-integration-action]'); if (integration) { void manageIntegration(integration.dataset.integrationHost, integration.dataset.integrationAction); return; }
     const vl = e.target.closest('[data-vault-lock]'); if (vl) { FK.did(() => FK.api('/api/vault/lock', { name: vl.dataset.vaultLock }), 'Vault locked').then(ok => { if (ok) FK.post({ type: 'lock-state' }); }); return; }
     const vu = e.target.closest('[data-vault-unlock]'); if (vu) { FK.sheets.openUnlock(vu.dataset.vaultUnlock); return; }
     const reveal = e.target.closest('[data-reveal-path]'); if (reveal && FK.app) { window.desktop.revealPath(reveal.dataset.revealPath); return; }
@@ -2216,7 +2359,9 @@ document.addEventListener('DOMContentLoaded', () => FK.hydrateIcons());
     if (FK.mode !== 'settings') return;
     const n = e.detail.name;
     if (n === 'change-pp') return changePassphrase();
-    if (n === 'settings-add-vault') { FK.post({ type: 'open-vault' }); FK.sheets.openVaultSheet('create'); return; }
+    if (n === 'settings-add-vault') { FK.sheets.openVaultSheet('create'); return; }
+    if (n === 'settings-backup-setup') return backupSetup();
+    if (n === 'settings-open-release') { if (FK.app && window.desktop.openReleasePage) return void window.desktop.openReleasePage(); window.open('https://github.com/IluvatarLabs/blinddrop/releases/latest', '_blank', 'noopener'); return; }
     if (n === 'settings-open-activity') { FK.post({ type: 'view', view: 'activity' }); window.close(); return; }
     if (n === 'settings-import-json') { FK.post({ type: 'import-json' }); window.close(); return; }
   });
@@ -2235,8 +2380,8 @@ document.addEventListener('DOMContentLoaded', () => FK.hydrateIcons());
     const n = e.detail.name;
     if (n === 'settings') return FK.openSettings(FK.app ? '' : 'general');
     if (n === 'lock') return FK.lock();
-    if (n === 'open-vault') return FK.anyUnlocked() ? FK.sheets.openVaultSheet('open') : FK.openVaultFlow('open');
-    if (n === 'add-vault') return FK.anyUnlocked() ? FK.sheets.openVaultSheet('create') : FK.openVaultFlow('create');
+    if (n === 'open-vault') return FK.sheets.openVaultSheet('open');
+    if (n === 'add-vault') return FK.sheets.openVaultSheet('create');
     if (n === 'backup') return FK.openSettings('vault');
   });
 
@@ -2244,6 +2389,7 @@ document.addEventListener('DOMContentLoaded', () => FK.hydrateIcons());
     window.desktop.onCommand(name => {
       if (name === 'about') return FK.openDialog('#about');
       if (name === 'shortcuts') return FK.openDialog('#shortcuts');
+      if (name === 'refresh-state') return void FK.load().catch(() => { });
       document.dispatchEvent(new CustomEvent('fk:action', { detail: { name, el: document.body } }));
     });
   }
