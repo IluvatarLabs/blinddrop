@@ -23,6 +23,7 @@ let requestCount = 0;
 let cancelClosed;
 let resolveCancelClosed;
 const temporaryDirectories = new Set();
+const brokerLogPaths = new WeakMap();
 
 function delay(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -143,7 +144,8 @@ function vaultFor() {
 function createBroker(streamLimits) {
   const directory = mkdtempSync(join(tmpdir(), "blinddrop-stream-"));
   temporaryDirectories.add(directory);
-  return new Broker(
+  const logPath = join(directory, "events.jsonl");
+  const broker = new Broker(
     vaultFor(),
     {
       id: "stream-grant",
@@ -151,10 +153,16 @@ function createBroker(streamLimits) {
       expiresAt: Date.now() + 60_000,
     },
     {
-      logPath: join(directory, "events.jsonl"),
+      logPath,
       streamLimits,
     },
   );
+  brokerLogPaths.set(broker, logPath);
+  return broker;
+}
+
+function loggedEvents(broker) {
+  return readFileSync(brokerLogPaths.get(broker), "utf8").trim().split("\n").map(JSON.parse);
 }
 
 function collectingSink() {
@@ -200,6 +208,7 @@ test("streaming preserves binary bytes and strips response transport metadata", 
       streamedBody(state),
       Buffer.from([0x00, 0xff, 0x01, 0x80, 0x7f]),
     );
+    assert.equal(loggedEvents(broker)[0].httpStatus, 200);
   } finally {
     broker.close();
   }
@@ -220,6 +229,7 @@ test("a credential split across upstream chunks is never released", async () => 
     assert.ok(released.length > 0);
     assert.ok(SAFE_PREFIX.startsWith(released));
     assert.equal(released.includes(CREDENTIAL), false);
+    assert.equal(loggedEvents(broker)[0].httpStatus, null);
   } finally {
     broker.close();
   }

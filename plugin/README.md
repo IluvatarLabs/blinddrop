@@ -40,7 +40,7 @@ deleting vaults or connections.
 
 ### Optional manual installation
 
-For one session, from a local checkout:
+First start a session and set `BLINDDROP_MCP_URL` as described below. For one session, from a local checkout:
 
 ```sh
 claude --plugin-dir /path/to/plugin
@@ -72,10 +72,28 @@ a vault stays unlocked, or starts one in their own terminal:
 blinddrop serve --http --allow work-api --ttl 3600 --session-file ~/.config/blinddrop/session.json
 ```
 
-The MCP URL defaults to `http://127.0.0.1:8787/mcp`. Set `BLINDDROP_MCP_URL` when
-the session runs on another port. With no live session file the server connects
-without a credential, the helper writes one line to stderr saying so, and the
-`SessionStart` note tells the agent that no stored credential is reachable.
+The app and CLI share a randomly chosen port saved in
+`~/.config/blinddrop/settings.json`. If it is busy, they try the next port and
+save the actual listening port. Settings → Sessions or CLI `--port PORT`
+changes this preference. An explicit CLI `--port 0` uses a temporary port
+without changing the saved preference.
+
+The app-managed plugin follows the actual endpoint automatically. For a manual
+plugin, set `BLINDDROP_MCP_URL` to the `mcpUrl` in the readiness output or session
+file **before launching the host**. In another owner terminal, this reads only
+the URL from the default session file:
+
+```sh
+export BLINDDROP_MCP_URL="$(node -p 'JSON.parse(require("node:fs").readFileSync(require("node:os").homedir()+"/.config/blinddrop/session.json","utf8")).mcpUrl')"
+claude --plugin-dir /path/to/plugin
+```
+
+If using `BLINDDROP_SESSION_FILE`, read that same file instead. The manual plugin
+requires this URL; it no longer assumes a fixed port. If the listening port
+changes, update the URL and restart the host. The headers helper refreshes the
+session token, but cannot change the host's configured URL. With no live session
+file it supplies no credential and reports that the owner must unlock or start
+a session. See the host's [URL environment-variable support](https://code.claude.com/docs/en/mcp#environment-variable-expansion-in-mcp-json).
 
 The session token is capability to use the owner's allowed connections until the
 session ends. It is never the archive passphrase and never a provider key.
@@ -219,5 +237,5 @@ claude -p --plugin-dir <plugin> --setting-sources '' --permission-mode default \
 
 One deviation: port `8787` was already in use on the test machine by an
 unrelated process, so the session bound a free port and the run set
-`BLINDDROP_MCP_URL` to its URL. That exercises the documented override in
-`.mcp.json` rather than its default.
+`BLINDDROP_MCP_URL` to its URL. That exercised the documented URL environment variable. Current manual
+configuration requires that variable; it has no fixed-port default.

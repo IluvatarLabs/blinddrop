@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync, mkdtempSync, rmSync, statSync } from "node:fs";
+import { appendFileSync, readFileSync, mkdtempSync, rmSync, statSync } from "node:fs";
 import { createServer } from "node:https";
 import { createServer as createTcpServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -10,6 +10,7 @@ import { after, before, test } from "node:test";
 
 import { Broker } from "../dist/broker.js";
 import { BlindDropError } from "../dist/errors.js";
+import { readActivity } from "../dist/owner-files.js";
 import {
   isAddressPermitted,
   selectValidatedAddress,
@@ -60,6 +61,10 @@ before(async () => {
 
       const url = new URL(request.url, "https://fixture.invalid");
       switch (url.pathname) {
+        case "/unauthorized":
+          response.writeHead(401, { "content-type": "application/json" });
+          response.end('{"error":"unauthorized"}');
+          return;
         case "/redirect":
           response.writeHead(302, { location: "/redirect-target" });
           response.end("redirected");
@@ -654,13 +659,14 @@ test("errors and mode-0600 use logs exclude credentials and request values", asy
   const state = createBroker();
   const userMarker = "agent-private-request-marker";
   try {
-    await state.broker.execute({
+    const unauthorized = await state.broker.execute({
       connection: "bearer",
-      path: "/inspect",
+      path: "/unauthorized",
       query: { q: userMarker },
       headers: { "x-user-value": userMarker },
       body: userMarker,
     });
+    assert.equal(unauthorized.status, 401);
     await rejectsCode(
       state.broker.execute({ connection: "basic", path: "/reflect-body" }),
       "RESPONSE_BLOCKED",
@@ -673,11 +679,24 @@ test("errors and mode-0600 use logs exclude credentials and request values", asy
     const events = contents.trim().split("\n").map((line) => JSON.parse(line));
     assert.deepEqual(
       Object.keys(events[0]).sort(),
-      ["code", "connection", "grantId", "outcome", "timestamp"],
+      ["code", "connection", "grantId", "httpStatus", "outcome", "timestamp"],
     );
     assert.equal(events[0].outcome, "success");
+    assert.equal(events[0].httpStatus, 401);
     assert.equal(events[1].code, "RESPONSE_BLOCKED");
+    assert.equal(events[1].httpStatus, null);
     assert.equal(statSync(state.logPath).mode & 0o777, 0o600);
+
+    appendFileSync(state.logPath, `${JSON.stringify({
+      timestamp: new Date().toISOString(),
+      grantId: "legacy-grant",
+      connection: "bearer",
+      outcome: "success",
+      code: null,
+    })}\n`);
+    const [legacy] = readActivity(state.logPath, { limit: 1 });
+    assert.equal(legacy.grantId, "legacy-grant");
+    assert.equal(legacy.httpStatus, null);
   } finally {
     state.broker.close();
   }

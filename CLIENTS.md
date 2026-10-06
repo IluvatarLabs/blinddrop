@@ -182,8 +182,10 @@ using Claude Code's MCP JSON shape:
 
 That configuration contains session-use authority, not the vault passphrase
 or provider key. It stops working when the process stops or expires. A new
-helper issues a new token; update the client configuration. `--port 8787`
-can keep the URL stable but does not make the token permanent. Repeat
+helper issues a new token; update the client configuration. The port is chosen
+randomly once and saved in Settings. `--port PORT` saves a custom preference;
+if busy, the next available port is saved. Always use the reported URL.
+`--port 0` requests a temporary port without changing the saved preference. Repeat
 `--allow` to include another exact connection. The host sees only
 `list_connections` and `execute_http`. Existing stdio setup remains available
 in [CONFIGURATION.md](CONFIGURATION.md#agent-session).
@@ -195,7 +197,7 @@ this endpoint is for local clients, not a webpage API.
 
 ## Agent integrations
 
-Use the app's Agent Integrations controls for Claude Code and local Codex. They manage a local plugin through the host's native plugin commands, preserving unrelated configuration. The bundled helper reads the current session file and supplies session-use authority without exposing the provider key. Leave **Agent access** enabled in Settings. The default endpoint is `http://127.0.0.1:8787/mcp`; changing the port in the app updates its managed integration and may require the host reload shown there. Manual plugin/skill installation remains available in the [plugin guide](plugin/README.md). Hook support differs by host; the [security policy](SECURITY.md) defines the boundary.
+Use the app's Agent Integrations controls for Claude Code and local Codex. They manage a local plugin through the host's native plugin commands, preserving unrelated configuration. The bundled helper reads the current session file and supplies session-use authority without exposing the provider key. Leave **Agent access** enabled in Settings. The app chooses and saves a random port on first use. A user change or automatic collision fallback updates its managed integration and may require the host reload shown there. Manual plugin/skill installation remains available in the [plugin guide](plugin/README.md). Hook support differs by host; the [security policy](SECURITY.md) defines the boundary.
 
 ## What fits, and what does not
 
@@ -237,7 +239,11 @@ atomically re-encrypts the archive. Secrets and connection references stay
 the same. Existing encrypted backups still need their old passphrase.
 In the app, **Back Up Setup** saves all registered encrypted vaults and their
 connection definitions, groups and settings. **Restore Setup** accepts that
-folder only into an empty installation, preserving each vault's passphrase.
+folder only into a fresh installation, preserving each vault's passphrase.
+Changing Appearance before restore is allowed; existing vaults and connection
+configuration are never overwritten or merged. If an archive was moved,
+**Locate file** reconnects it under its existing vault name and references,
+then asks for its passphrase.
 **Export Encrypted Vault** copies one archive only. There is no recovery bypass
 if its passphrase is lost. A complete app setup also needs `connections.json`
 and `vaults.json`, plus any wanted groups and settings. A standalone CLI archive

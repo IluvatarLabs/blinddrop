@@ -413,12 +413,25 @@ test('serve --http supports the official MCP client and a bounded ordinary HTTP 
 test('run launches the official Anthropic SDK, streams before completion, preserves exit, and cleans up', async t => {
   const dir = await mkdtemp(join(tmpdir(), 'blinddrop-sdk-run-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
+  const home = join(dir, 'home');
+  const settingsPath = join(home, '.config', 'blinddrop', 'settings.json');
   const vault = join(dir, 'vault.enc');
   const passphrase = 'disposable-run-passphrase';
   const providerKey = randomBytes(32).toString('hex');
   const completeSuccessfulStream = deferred();
   const cancellationClosed = deferred();
   const operations = [];
+
+  const spawnRun = args => {
+    const previousHome = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      return spawnOwner(vault, passphrase, args);
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+    }
+  };
 
   const receiver = createHttpsServer({
     key: await readFile(keyPath),
@@ -462,7 +475,7 @@ test('run launches the official Anthropic SDK, streams before completion, preser
     `https://127.0.0.1:${receiver.address().port}`,
   );
 
-  const run = spawnOwner(vault, passphrase, [
+  const run = spawnRun([
     'run', 'receiver', '--base-url-env', 'ANTHROPIC_BASE_URL',
     '--api-key-env', 'ANTHROPIC_API_KEY', '--ttl', '30', '--',
     process.execPath, 'examples/anthropic.mjs', 'claude-fixture', 'Say hello.',
@@ -477,6 +490,8 @@ test('run launches the official Anthropic SDK, streams before completion, preser
   assert.deepEqual(operations[0], {
     url: '/v1/messages', authenticated: true, model: 'claude-fixture', requestShape: true,
   });
+  const savedPort = JSON.parse(await readFile(settingsPath, 'utf8')).sessionPort;
+  assert.ok(savedPort >= 49_152 && savedPort <= 65_535);
   completeSuccessfulStream.resolve();
   const successfulExit = await run.exit;
   const successfulStderr = await run.stderr;
@@ -499,7 +514,7 @@ test('run launches the official Anthropic SDK, streams before completion, preser
     }) + '\n');
     process.exitCode = 7;
   `;
-  const exitRun = spawnOwner(vault, passphrase, [
+  const exitRun = spawnRun([
     'run', 'receiver', '--base-url-env', '__proto__',
     '--api-key-env', 'ANTHROPIC_API_KEY', '--ttl', '30', '--',
     process.execPath, '--input-type=module', '--eval', observationProgram,
@@ -528,7 +543,7 @@ test('run launches the official Anthropic SDK, streams before completion, preser
     process.stdout.write('CANCEL_BASE:' + process.env.ANTHROPIC_BASE_URL + '\n');
     await stream.finalText();
   `;
-  const cancelled = spawnOwner(vault, passphrase, [
+  const cancelled = spawnRun([
     'run', 'receiver', '--base-url-env', 'ANTHROPIC_BASE_URL',
     '--api-key-env', 'ANTHROPIC_API_KEY', '--ttl', '30', '--',
     process.execPath, '--input-type=module', '--eval', cancelProgram,

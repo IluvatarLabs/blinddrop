@@ -7,6 +7,7 @@ import {
   nativeImage,
   nativeTheme,
   powerMonitor,
+  screen,
   shell,
   Tray,
 } from "electron";
@@ -18,7 +19,6 @@ import { createIntegrationManager } from "./integrations.mjs";
 
 const APP_TITLE = "BlindDrop";
 const HELP_URL = "https://github.com/IluvatarLabs/blinddrop";
-const RELEASE_URL = "https://github.com/IluvatarLabs/blinddrop/releases/latest";
 const VAULT_OPTION = "--vault";
 const SETTINGS_FILE = "settings.json";
 const VAULT_FILE = "vault.enc";
@@ -33,12 +33,10 @@ const SHUTDOWN_FAILED_LOG = "BlindDrop: the owner interface did not shut down cl
 const LOCK_FAILED_LOG = "BlindDrop: the owner interface could not lock every vault.";
 const ABSOLUTE_PATH_REQUIRED = "A file path must be absolute.";
 
-// The page's `--surface` token, resolved to sRGB. Light `oklch(100% 0 0)`,
-// dark `oklch(26% 0.01 250)` (`html[data-theme="dark"]`), both from the
-// `styles.css` block of the prototypes in `docs/mockups/`. Only the flash the
-// window shows before the page paints; the page owns every other colour.
-const SURFACE_LIGHT = "#ffffff";
-const SURFACE_DARK = "#202429";
+// The page's current `--surface` tokens. This is only the native frame and the
+// flash before the page paints; the page owns every other colour.
+const SURFACE_LIGHT = "#f6f6f7";
+const SURFACE_DARK = "#292b2f";
 
 /**
  * Window geometry per screen. The page names the screen; the app owns the size.
@@ -51,6 +49,22 @@ const SCREENS = {
   vault: { width: 1236, height: 818, resizable: true, minWidth: 980, minHeight: 640 },
   settings: { width: 720, height: 470, resizable: false, minWidth: 0, minHeight: 0 },
 };
+const SETTINGS_TABS = new Set(["general", "security", "sessions", "vault", "advanced"]);
+const IDLE_LOCK_MINUTES = new Set([1, 5, 15, 30, 60]);
+const LOCK_REQUIRED_COMMANDS = new Set([
+  "new-connection",
+  "new-secret",
+  "import-env",
+  "import-json",
+  "backup",
+  "focus-search",
+  "mode-list",
+  "mode-table",
+  "toggle-sidebar",
+  "view-connections",
+  "view-secrets",
+  "view-activity",
+]);
 
 /** @type {import("blinddrop/dist/ui.js").OwnerUi | null} */
 let ui = null;
@@ -59,8 +73,20 @@ let shutdownPromise = null;
 let shutdownComplete = false;
 /** @type {import("electron").BrowserWindow | null} */
 let mainWindow = null;
+/** @type {Promise<void> | null} */
+let mainWindowLoad = null;
 /** @type {import("electron").BrowserWindow | null} */
 let settingsWindow = null;
+/** The screen currently occupying each native window. */
+const windowScreens = new WeakMap();
+/**
+ * The owner's workspace placement for this app run. Compact lock/welcome
+ * screens must not erase it, and closing the UI while the app remains resident
+ * must not either.
+ *
+ * @type {{ bounds: import("electron").Rectangle, maximized: boolean } | null}
+ */
+let workspacePlacement = null;
 /**
  * The menu-bar presence that keeps the app reachable while no window is open.
  * @type {import("electron").Tray | null}
@@ -71,8 +97,12 @@ let configDir = "";
 /** @type {import("./integrations.mjs").IntegrationManager | null} */
 let integrations = null;
 let appliedSessionPort = null;
+let integrationOperations = Promise.resolve();
 /** Power events currently bound to app-global Lock All, by event name. */
 const powerListeners = new Map();
+/** @type {ReturnType<typeof setInterval> | null} */
+let idleLockTimer = null;
+let appliedIdleLockMinutes = 0;
 
 /**
  * Deny every new window and every navigation that leaves `allowedOrigin`.
@@ -150,12 +180,65 @@ function recordedVaultPath(settingsPath) {
  */
 function applyScreen(window, name) {
   if (window === null || window.isDestroyed()) return;
-  const screen = typeof name === "string" ? SCREENS[name] : undefined;
-  if (screen === undefined) return;
-  window.setMinimumSize(screen.minWidth, screen.minHeight);
-  window.setResizable(screen.resizable);
-  window.setSize(screen.width, screen.height);
-  window.center();
+  const next = typeof name === "string" ? SCREENS[name] : undefined;
+  if (next === undefined || windowScreens.get(window) === name) return;
+
+  if (windowScreens.get(window) === "vault") rememberWorkspace(window);
+
+  if (name === "vault" && workspacePlacement !== null) {
+    if (window.isMaximized()) window.unmaximize();
+    window.setMinimumSize(next.minWidth, next.minHeight);
+    window.setResizable(next.resizable);
+    window.setBounds(workspacePlacement.bounds);
+    if (workspacePlacement.maximized) window.maximize();
+  } else {
+    if (window.isMaximized()) window.unmaximize();
+    window.setMinimumSize(next.minWidth, next.minHeight);
+    window.setResizable(next.resizable);
+    resizeAroundCurrentCenter(window, next.width, next.height);
+  }
+  windowScreens.set(window, name);
+}
+
+/** Remember a user-sized workspace without replacing it with compact bounds. */
+function rememberWorkspace(window) {
+  if (window.isDestroyed() || windowScreens.get(window) !== "vault") return;
+  workspacePlacement = {
+    bounds: window.getNormalBounds(),
+    maximized: window.isMaximized(),
+  };
+}
+
+/**
+ * Resize around the window's current centre and clamp only when the result
+ * would leave the display work area. New windows are centred once by
+ * `createWindow`; later screen changes preserve the owner's placement.
+ */
+function resizeAroundCurrentCenter(window, width, height) {
+  const current = window.getBounds();
+  const workArea = screen.getDisplayMatching(current).workArea;
+  const desiredX = Math.round(current.x + (current.width - width) / 2);
+  const desiredY = Math.round(current.y + (current.height - height) / 2);
+  const maxX = workArea.x + Math.max(0, workArea.width - width);
+  const maxY = workArea.y + Math.max(0, workArea.height - height);
+  window.setBounds({
+    x: Math.min(Math.max(desiredX, workArea.x), maxX),
+    y: Math.min(Math.max(desiredY, workArea.y), maxY),
+    width,
+    height,
+  });
+}
+
+function nativeBackgroundColor() {
+  return nativeTheme.shouldUseDarkColors ? SURFACE_DARK : SURFACE_LIGHT;
+}
+
+/** Keep the native frame and pre-paint background aligned with the page. */
+function refreshNativeAppearance() {
+  const background = nativeBackgroundColor();
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.isDestroyed()) window.setBackgroundColor(background);
+  }
 }
 
 /**
@@ -173,7 +256,7 @@ function createWindow(screenName) {
     title: APP_TITLE,
     titleBarStyle: "hiddenInset",
     trafficLightPosition: { x: 14, y: 20 },
-    backgroundColor: nativeTheme.shouldUseDarkColors ? SURFACE_DARK : SURFACE_LIGHT,
+    backgroundColor: nativeBackgroundColor(),
     webPreferences: {
       preload: PRELOAD,
       contextIsolation: true,
@@ -181,6 +264,8 @@ function createWindow(screenName) {
       sandbox: true,
     },
   });
+  window.center();
+  windowScreens.set(window, screenName);
   restrictNavigation(window.webContents, ui === null ? null : new URL(ui.url).origin);
   return window;
 }
@@ -194,11 +279,15 @@ function createWindow(screenName) {
  */
 function createMainWindow() {
   mainWindow = createWindow("welcome");
+  mainWindow.on("close", () => {
+    rememberWorkspace(mainWindow);
+  });
   mainWindow.on("closed", () => {
     mainWindow = null;
     if (settingsWindow !== null && !settingsWindow.isDestroyed()) settingsWindow.close();
   });
-  return mainWindow.loadURL(ui.launchUrl);
+  mainWindowLoad = mainWindow.loadURL(ui.launchUrl);
+  return mainWindowLoad;
 }
 
 /**
@@ -224,12 +313,26 @@ function showWindow() {
  * @param {unknown} tab
  */
 function openSettings(tab) {
+  const requestedTab = typeof tab === "string" && SETTINGS_TABS.has(tab) ? tab : null;
   if (settingsWindow !== null && !settingsWindow.isDestroyed()) {
-    settingsWindow.focus();
+    const target = settingsWindow;
+    const selectTab = () => {
+      if (!target.isDestroyed() && requestedTab !== null) {
+        target.webContents.send("command", "settings-tab", requestedTab);
+      }
+    };
+    if (requestedTab !== null && target.webContents.isLoadingMainFrame()) {
+      target.webContents.once("did-finish-load", selectTab);
+    } else if (requestedTab !== null) {
+      selectTab();
+    }
+    if (target.isMinimized()) target.restore();
+    target.show();
+    target.focus();
     return;
   }
   if (ui === null) return;
-  const name = typeof tab === "string" && tab !== "" ? tab : "general";
+  const name = requestedTab ?? "general";
   settingsWindow = createWindow("settings");
   settingsWindow.on("closed", () => {
     settingsWindow = null;
@@ -248,15 +351,17 @@ function openSettings(tab) {
  */
 async function sendMainCommand(name) {
   if (ui === null) return;
-  if (mainWindow === null || mainWindow.isDestroyed()) await createMainWindow();
-  const target = mainWindow;
+  let target = mainWindow;
+  let load = mainWindowLoad;
+  if (target === null || target.isDestroyed()) {
+    load = createMainWindow();
+    target = mainWindow;
+  }
+  if (load !== null) await load;
   if (target === null || target.isDestroyed()) return;
   if (target.isMinimized()) target.restore();
   target.show();
   target.focus();
-  if (target.webContents.isLoadingMainFrame()) {
-    await new Promise(resolve => target.webContents.once("did-finish-load", resolve));
-  }
   if (target === mainWindow && !target.isDestroyed()) target.webContents.send("command", name);
 }
 
@@ -264,6 +369,24 @@ async function sendMainCommand(name) {
 function refreshWindows() {
   for (const window of BrowserWindow.getAllWindows()) {
     if (!window.isDestroyed()) window.webContents.send("command", "refresh-state");
+  }
+}
+
+/** The owner runtime, rather than a renderer or window, owns lock state. */
+function hasUnlockedVaults() {
+  return ui?.hasUnlockedVaults() === true;
+}
+
+/** Keep native commands aligned with the owner runtime's current lock state. */
+function refreshLockRequiredMenuItems() {
+  const menu = Menu.getApplicationMenu();
+  if (menu === null) return;
+  const enabled = hasUnlockedVaults();
+  const lock = menu.getMenuItemById("command:lock");
+  if (lock !== null) lock.enabled = enabled;
+  for (const command of LOCK_REQUIRED_COMMANDS) {
+    const item = menu.getMenuItemById(`command:${command}`);
+    if (item !== null) item.enabled = enabled;
   }
 }
 
@@ -276,6 +399,7 @@ async function lockAll() {
   if (session === null) return;
   try {
     await session.lockAll();
+    refreshLockRequiredMenuItems();
     refreshWindows();
   } catch {
     console.error(LOCK_FAILED_LOG);
@@ -289,10 +413,17 @@ async function lockAll() {
  * @returns {import("electron").MenuItemConstructorOptions}
  */
 function item(label, command, accelerator) {
+  const requiresUnlocked = LOCK_REQUIRED_COMMANDS.has(command);
   return {
+    id: `command:${command}`,
     label,
+    enabled: !requiresUnlocked || hasUnlockedVaults(),
     ...(accelerator === undefined ? {} : { accelerator }),
     click: () => {
+      if (requiresUnlocked && !hasUnlockedVaults()) {
+        refreshLockRequiredMenuItems();
+        return;
+      }
       void sendMainCommand(command);
     },
   };
@@ -314,10 +445,13 @@ function buildMenu() {
         },
         { type: "separator" },
         {
+          id: "command:lock",
           label: "Lock All",
           accelerator: "Command+L",
+          enabled: hasUnlockedVaults(),
           click: () => {
-            void lockAll();
+            if (hasUnlockedVaults()) void lockAll();
+            else refreshLockRequiredMenuItems();
           },
         },
         { type: "separator" },
@@ -395,6 +529,7 @@ function buildMenu() {
     },
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+  refreshLockRequiredMenuItems();
 }
 
 /**
@@ -409,13 +544,16 @@ function createTray() {
   image.setTemplateImage(true);
   tray = new Tray(image);
   tray.setToolTip(APP_TITLE);
-  tray.setContextMenu(
-    Menu.buildFromTemplate([
-      { label: `Open ${APP_TITLE}`, click: () => showWindow() },
-      { type: "separator" },
-      { label: `Quit ${APP_TITLE}`, click: () => app.quit() },
-    ]),
-  );
+  const contextMenu = Menu.buildFromTemplate([
+    { label: `Open ${APP_TITLE}`, click: () => showWindow() },
+    { type: "separator" },
+    { label: `Quit ${APP_TITLE}`, click: () => app.quit() },
+  ]);
+  if (process.platform === "darwin") {
+    tray.on("right-click", () => tray?.popUpContextMenu(contextMenu));
+  } else {
+    tray.setContextMenu(contextMenu);
+  }
   tray.on("click", () => showWindow());
 }
 
@@ -442,27 +580,90 @@ function forwardPowerEvent(event, on) {
 }
 
 /**
+ * Apply the saved idle-lock threshold to Electron's system-wide idle clock.
+ * The timer lives in the main process, so closing every window does not stop it.
+ *
+ * @param {unknown} minutes
+ */
+function applyIdleLock(minutes) {
+  const next = IDLE_LOCK_MINUTES.has(minutes) ? minutes : 0;
+  if (next === appliedIdleLockMinutes) return;
+  if (idleLockTimer !== null) {
+    clearInterval(idleLockTimer);
+    idleLockTimer = null;
+  }
+  appliedIdleLockMinutes = next;
+  if (next === 0) return;
+  idleLockTimer = setInterval(() => {
+    const thresholdSeconds = appliedIdleLockMinutes * 60;
+    if (
+      thresholdSeconds > 0 &&
+      hasUnlockedVaults() &&
+      powerMonitor.getSystemIdleTime() >= thresholdSeconds
+    ) {
+      void lockAll();
+    }
+  }, 1000);
+}
+
+/**
  * @param {unknown} settings
  */
-async function applySettings(settings, refreshIntegrations = true) {
+async function applySettings(settings) {
   const value = typeof settings === "object" && settings !== null ? settings : {};
+  nativeTheme.themeSource = ["system", "light", "dark"].includes(value.appearance)
+    ? value.appearance
+    : "system";
+  refreshNativeAppearance();
   // Only touch the login item when the setting differs: macOS refuses the call for an
   // unsigned build and logs an error even when nothing would change.
   const openAtLogin = value.openAtLogin === true;
   if (app.getLoginItemSettings().openAtLogin !== openAtLogin) {
     app.setLoginItemSettings({ openAtLogin });
   }
+  const showDockIcon = value.showDockIcon !== false;
+  if (app.dock !== undefined && app.dock.isVisible() !== showDockIcon) {
+    if (showDockIcon) await app.dock.show();
+    else app.dock.hide();
+  }
   forwardPowerEvent("suspend", value.lockOnSleep === true);
   forwardPowerEvent("lock-screen", value.lockOnScreenLock === true);
-  const sessionPort = Number.isInteger(value.sessionPort) ? value.sessionPort : 8787;
+  applyIdleLock(value.idleLockMinutes);
+  refreshLockRequiredMenuItems();
+}
+
+/**
+ * Serialize native host CLI work. A separate settled tail keeps one failed host
+ * command from poisoning later status, update or endpoint operations.
+ *
+ * @template T
+ * @param {() => T | Promise<T>} operation
+ * @returns {Promise<T>}
+ */
+function serializeIntegration(operation) {
+  const result = integrationOperations.then(operation, operation);
+  integrationOperations = result.then(() => undefined, () => undefined);
+  return result;
+}
+
+/**
+ * Keep native host configuration ordered without making owner lock/session work
+ * wait for a host CLI. The owner runtime persists and binds the port first.
+ *
+ * @param {number} port
+ */
+function queueIntegrationEndpoint(port) {
   if (
-    integrations !== null &&
-    refreshIntegrations &&
-    sessionPort !== appliedSessionPort
-  ) {
-    await integrations.applyEndpoint(sessionPort);
-  }
-  appliedSessionPort = sessionPort;
+    integrations === null ||
+    !Number.isInteger(port) ||
+    port < 1 ||
+    port > 65_535 ||
+    port === appliedSessionPort
+  ) return;
+  appliedSessionPort = port;
+  void serializeIntegration(() => integrations.applyEndpoint(port)).catch(() => {
+    integrations?.markEndpointRefreshFailed();
+  });
 }
 
 /**
@@ -538,11 +739,13 @@ function registerBridge() {
   ipcMain.handle("desktop:open-settings", (_event, tab) => {
     openSettings(tab);
   });
+  ipcMain.handle("desktop:send-main-command", (_event, name) => sendMainCommand(name));
   ipcMain.handle("desktop:apply-settings", (_event, settings) => applySettings(settings));
-  ipcMain.handle("desktop:open-release-page", () => shell.openExternal(RELEASE_URL));
-  ipcMain.handle("desktop:get-integrations", () => integrations?.getIntegrations());
+  ipcMain.handle("desktop:get-integrations", () =>
+    serializeIntegration(() => integrations?.getIntegrations()),
+  );
   ipcMain.handle("desktop:manage-integration", (_event, input) =>
-    integrations?.manageIntegration(input),
+    serializeIntegration(() => integrations?.manageIntegration(input)),
   );
 }
 
@@ -560,6 +763,7 @@ function failStartup() {
  */
 function shutdown() {
   if (shutdownPromise === null) {
+    applyIdleLock(0);
     const session = ui;
     ui = null;
     shutdownPromise = (session === null ? Promise.resolve() : session.close()).catch(() => {
@@ -570,8 +774,8 @@ function shutdown() {
 }
 
 /**
- * Stop the owner interface, then quit. Re-entrant: the second pass, raised by
- * `app.quit()` itself, lets the quit through.
+ * Stop the owner interface, then exit. The first `app.quit()` was cancelled so
+ * cleanup could finish; do not re-enter that cancelled native quit flow.
  *
  * @param {import("electron").Event | undefined} event
  */
@@ -584,7 +788,7 @@ function quit(event) {
       tray.destroy();
       tray = null;
     }
-    app.quit();
+    app.exit(0);
   });
 }
 
@@ -602,6 +806,7 @@ app.on("before-quit", event => {
 });
 
 app.whenReady().then(async () => {
+  nativeTheme.on("updated", refreshNativeAppearance);
   const requestedVaultPath = parseVaultPath(process.argv);
   if (requestedVaultPath === null) {
     failStartup();
@@ -634,7 +839,7 @@ app.whenReady().then(async () => {
   }
 
   try {
-    ui = await startOwnerUi({ vaultPath });
+    ui = await startOwnerUi({ vaultPath, onSessionPortChanged: queueIntegrationEndpoint });
   } catch {
     failStartup();
     return;
@@ -644,25 +849,15 @@ app.whenReady().then(async () => {
   void ui.closed.then(() => quit(undefined));
 
   try {
-    let settings;
-    try {
-      settings = readSettings(configDir);
-    } catch {
-      settings = {
-        openAtLogin: false,
-        lockOnSleep: true,
-        lockOnScreenLock: false,
-        sessionPort: 8787,
-      };
-    }
+    const settings = readSettings(configDir);
     integrations = createIntegrationManager({
       configDir,
       pluginRoot: PLUGIN_ROOT,
       executablePath: process.execPath,
       endpointPort: settings.sessionPort,
     });
-    appliedSessionPort = settings.sessionPort;
-    await applySettings(settings, false);
+    queueIntegrationEndpoint(settings.sessionPort);
+    await applySettings(settings);
     registerBridge();
     buildMenu();
     createTray();

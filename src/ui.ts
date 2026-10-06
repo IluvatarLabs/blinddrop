@@ -16,6 +16,7 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { basename, dirname, join, resolve } from "node:path";
+import { parseEnv } from "node:util";
 
 import { z } from "zod";
 
@@ -66,6 +67,7 @@ import {
   saveRegistry,
   validateName,
   validateConnection,
+  validateVaultArchive,
 } from "./vault.js";
 
 /** A pasted PEM or certificate has to fit in one owner request. */
@@ -110,6 +112,7 @@ const SecretSetBody = z
   .strict();
 const SecretFieldRemoveBody = z.object({ vault: z.string(), name: z.string(), fieldId: z.string() }).strict();
 const SecretNameBody = z.object({ vault: z.string(), name: z.string() }).strict();
+const ParseEnvBody = z.object({ vault: z.string(), text: z.string() }).strict();
 const ImportEnvBody = z.object({ vault: z.string(), secrets: z.record(z.string(), z.string()) }).strict();
 const ConnectionSetBody = z
   .object({
@@ -147,6 +150,8 @@ export interface OwnerUiOptions {
   sessionPort?: number;
   sessionFile?: string;
   configDir?: string;
+  /** Native notification only; host updates must not delay locking the runtime. */
+  onSessionPortChanged?: (port: number) => void;
 }
 
 export interface OwnerUi {
@@ -154,6 +159,7 @@ export interface OwnerUi {
   token: string;
   launchUrl: string;
   closed: Promise<void>;
+  hasUnlockedVaults(): boolean;
   lockAll(): Promise<void>;
   close(): Promise<void>;
 }
@@ -265,10 +271,14 @@ export async function startOwnerUi(options: OwnerUiOptions): Promise<OwnerUi> {
     : boundedPort(options.sessionPort, 0);
   const defaultPath = defaultVaultPath();
   const configDir = options.configDir ?? dirname(defaultPath);
+  readSettings(configDir);
   const connectionFile = connectionsPath(configDir);
   const sessionFilePath = options.sessionFile ?? join(configDir, "session.json");
   // Activity is global; the running session logs to the default vault's log.
   const logPath = activityLogPath(defaultPath);
+  // Vault name -> its held passphrase. Only unlocked vaults appear; passphrases
+  // live only here and in the session closure, never on disk or in a response.
+  const passphrases = new Map<string, Buffer>();
 
   if (options.vaultPath && existsSync(options.vaultPath)) {
     const entries = loadStoredRegistry(configDir).vaults;
@@ -285,9 +295,6 @@ export async function startOwnerUi(options: OwnerUiOptions): Promise<OwnerUi> {
 
   const token = randomBytes(32).toString("base64url");
   const tokenBytes = Buffer.from(token, "utf8");
-  // Vault name -> its held passphrase. Only unlocked vaults appear; passphrases
-  // live only here and in the session closure, never on disk or in a response.
-  const passphrases = new Map<string, Buffer>();
   let active: ActiveSession | undefined;
   let sessionError: ErrorCode | null = null;
   let syncChain: Promise<void> = Promise.resolve();
@@ -351,10 +358,15 @@ export async function startOwnerUi(options: OwnerUiOptions): Promise<OwnerUi> {
     const existing = registry.vaults.find(item => item.name === name);
     if (existing !== undefined) {
       if (resolve(existing.path) === resolve(path)) return;
-      if (name !== DEFAULT_VAULT_NAME || existsSync(existing.path)) throw new BlindDropError("INVALID_INPUT");
+      if (existsSync(existing.path)) throw new BlindDropError("INVALID_INPUT");
+      releaseVault(name);
       existing.path = path;
     } else registry.vaults.push({ name, path });
     saveRegistry(registry, configDir);
+  }
+
+  function hasRegisteredVaults(): boolean {
+    return loadStoredRegistry(configDir).vaults.length > 0;
   }
 
   function unregisterVault(name: string): void {
@@ -503,6 +515,10 @@ export async function startOwnerUi(options: OwnerUiOptions): Promise<OwnerUi> {
         forget(entry!);
         if (expired && !stopped && passphrases.size > 0) void syncSession();
       });
+      const boundPort = Number(new URL(http.mcpUrl).port);
+      if (sessionPortOverride !== 0 && boundPort !== settings.sessionPort) {
+        writeSettings(configDir, { sessionPort: boundPort });
+      }
       if (settings.sessionFile) {
         writeSessionFile(sessionFilePath, {
           mcpUrl: http.mcpUrl,
@@ -512,6 +528,7 @@ export async function startOwnerUi(options: OwnerUiOptions): Promise<OwnerUi> {
         });
         entry.filePath = sessionFilePath;
       }
+      notifySessionPort(boundPort);
       sessionError = null;
     } catch (error) {
       if (entry !== undefined) {
@@ -524,6 +541,14 @@ export async function startOwnerUi(options: OwnerUiOptions): Promise<OwnerUi> {
       }
       // The vaults stay unlocked for editing; the page reports the reason.
       sessionError = publicError(error).code;
+    }
+  }
+
+  function notifySessionPort(port: number): void {
+    try {
+      options.onSessionPortChanged?.(port);
+    } catch {
+      // Native integration status owns update failures; the session remains usable.
     }
   }
 
@@ -558,6 +583,7 @@ export async function startOwnerUi(options: OwnerUiOptions): Promise<OwnerUi> {
   }
 
   function state(): unknown {
+    const registered = new Set(loadStoredRegistry(configDir).vaults.map(entry => entry.name));
     return {
       version: VERSION,
       configDir,
@@ -566,6 +592,7 @@ export async function startOwnerUi(options: OwnerUiOptions): Promise<OwnerUi> {
       vaults: registryEntries().map(entry => ({
         name: entry.name,
         path: entry.path,
+        registered: registered.has(entry.name),
         exists: existsSync(entry.path),
         unlocked: passphrases.has(entry.name)
       })),
@@ -688,6 +715,7 @@ export async function startOwnerUi(options: OwnerUiOptions): Promise<OwnerUi> {
         const input = parse(VaultOpenBody, body);
         assertVaultReservation(input.name, input.path);
         if (!existsSync(input.path)) throw new BlindDropError("VAULT_NOT_FOUND");
+        validateVaultArchive(input.path);
         registerVault(input.name, input.path);
         await syncSession();
         return state();
@@ -779,6 +807,13 @@ export async function startOwnerUi(options: OwnerUiOptions): Promise<OwnerUi> {
         return written();
       }
     }],
+    ["/api/secret/parse-env", {
+      POST: body => {
+        const input = parse(ParseEnvBody, body);
+        requireUnlocked(input.vault);
+        return { secrets: parseEnv(input.text) };
+      }
+    }],
     ["/api/secret/import-env", {
       POST: body => {
         const input = parse(ImportEnvBody, body);
@@ -857,15 +892,17 @@ export async function startOwnerUi(options: OwnerUiOptions): Promise<OwnerUi> {
     }],
     ["/api/settings", {
       GET: () => readSettings(configDir),
-      POST: async body => {
+      POST: body => serializeOwner(async () => {
         const before = readSettings(configDir);
         const after = writeSettings(configDir, body);
         if (passphrases.size > 0 && (before.sessionPort !== after.sessionPort ||
             before.sessionFile !== after.sessionFile)) {
-          await syncSession();
+          await runSync();
         }
-        return after;
-      }
+        const current = readSettings(configDir);
+        if (before.sessionPort !== current.sessionPort) notifySessionPort(current.sessionPort);
+        return current;
+      })
     }],
     ["/api/vault/backup", {
       POST: body => {
@@ -887,12 +924,12 @@ export async function startOwnerUi(options: OwnerUiOptions): Promise<OwnerUi> {
       POST: body => {
         const input = parse(SetupPathBody, body);
         if (passphrases.size > 0 || active !== undefined ||
-            registryEntries().some(entry => existsSync(entry.path))) {
+            hasRegisteredVaults()) {
           throw new BlindDropError("VAULT_EXISTS");
         }
         return serializeOwner(() => {
           if (passphrases.size > 0 || active !== undefined ||
-              registryEntries().some(entry => existsSync(entry.path))) {
+              hasRegisteredVaults()) {
             throw new BlindDropError("VAULT_EXISTS");
           }
           restoreSetup(configDir, input.path);
@@ -1038,6 +1075,10 @@ export async function startOwnerUi(options: OwnerUiOptions): Promise<OwnerUi> {
     await syncSession();
   }
 
+  function hasUnlockedVaults(): boolean {
+    return passphrases.size > 0;
+  }
+
   try {
     await new Promise<void>((resolve, reject) => {
       const onError = () => reject(new BlindDropError("PORT_UNAVAILABLE"));
@@ -1059,5 +1100,13 @@ export async function startOwnerUi(options: OwnerUiOptions): Promise<OwnerUi> {
   }
   authority = `127.0.0.1:${address.port}`;
   pageOrigin = `http://${authority}`;
-  return { url: `${pageOrigin}/`, token, launchUrl: `${pageOrigin}/?t=${token}`, closed, lockAll, close };
+  return {
+    url: `${pageOrigin}/`,
+    token,
+    launchUrl: `${pageOrigin}/?t=${token}`,
+    closed,
+    hasUnlockedVaults,
+    lockAll,
+    close
+  };
 }

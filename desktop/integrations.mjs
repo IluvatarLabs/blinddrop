@@ -20,7 +20,6 @@ const BUNDLED_VERSION = "0.6.0";
 const MARKETPLACE = "blinddrop-desktop";
 const PLUGIN = "blinddrop";
 const SELECTOR = `${PLUGIN}@${MARKETPLACE}`;
-const DEFAULT_PORT = 8787;
 const COMMAND_TIMEOUT_MS = 30_000;
 const COMMAND_MAX_BYTES = 1024 * 1024;
 
@@ -162,7 +161,7 @@ function unavailableStatus(host, available = false, message) {
     actions: { install: false, update: false, remove: false },
     connected: null,
     activation: "new-session",
-    trustRequired: host === "codex",
+    trustRequired: false,
     guidance: message ?? guidance(host, "unavailable"),
   };
 }
@@ -177,7 +176,7 @@ export class IntegrationManager {
     configDir,
     pluginRoot,
     executablePath,
-    endpointPort = DEFAULT_PORT,
+    endpointPort,
     homeDir = homedir(),
     environment = process.env,
     binaryOverrides = {},
@@ -185,7 +184,8 @@ export class IntegrationManager {
     this.configDir = configDir;
     this.pluginRoot = pluginRoot;
     this.executablePath = executablePath;
-    this.endpointPort = validPort(endpointPort) ? endpointPort : DEFAULT_PORT;
+    if (!validPort(endpointPort)) throw new HostFailure();
+    this.endpointPort = endpointPort;
     this.homeDir = homeDir;
     this.environment = { ...environment, HOME: homeDir };
     this.binaryOverrides = binaryOverrides;
@@ -398,7 +398,7 @@ export class IntegrationManager {
       },
       connected: null,
       activation: "new-session",
-      trustRequired: host === "codex",
+      trustRequired: host === "codex" && configured,
       guidance: guidance(host, state),
     };
   }
@@ -406,6 +406,14 @@ export class IntegrationManager {
   async getIntegrations() {
     const [claude, codex] = await Promise.all([this.status("claude"), this.status("codex")]);
     return { bundledVersion: BUNDLED_VERSION, claude, codex };
+  }
+
+  markEndpointRefreshFailed() {
+    // `status` gates this marker on an integration actually being configured.
+    // Mark both because an unexpected queue failure can occur before the
+    // manager has identified which host operation failed.
+    this.refreshFailures.add("claude");
+    this.refreshFailures.add("codex");
   }
 
   async installOrUpdate(host, binary, action) {
@@ -493,8 +501,11 @@ export class IntegrationManager {
     if (!validPort(port)) return this.getIntegrations();
     this.endpointPort = port;
     const statuses = await this.getIntegrations();
+    for (const host of ["claude", "codex"]) {
+      if (statuses[host].state === "unavailable") this.refreshFailures.add(host);
+      else if (statuses[host].state === "not-installed") this.refreshFailures.delete(host);
+    }
     if (!statuses.claude.configured && !statuses.codex.configured) {
-      this.refreshFailures.clear();
       return statuses;
     }
     try {

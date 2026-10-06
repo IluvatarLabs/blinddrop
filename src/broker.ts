@@ -107,6 +107,7 @@ const MAX_MULTIPART_CONTENT_TYPE_BYTES = 256;
 
 interface ActiveRequest {
   controller: AbortController;
+  httpStatus: number | null;
 }
 
 interface UseEvent {
@@ -115,6 +116,7 @@ interface UseEvent {
   connection: string | null;
   outcome: "success" | "denied" | "blocked" | "failed";
   code: ErrorCode | null;
+  httpStatus: number | null;
 }
 
 interface EncodedBody {
@@ -439,7 +441,7 @@ export class Broker {
         throw new BlindDropError("BUSY");
       }
 
-      const active: ActiveRequest = { controller: new AbortController() };
+      const active: ActiveRequest = { controller: new AbortController(), httpStatus: null };
       this.active.add(active);
       const onExternalAbort = (): void => {
         active.controller.abort(
@@ -464,7 +466,7 @@ export class Broker {
 
       try {
         const result = await operation(connection, active);
-        this.writeUseEvent(knownConnection, "success", null);
+        this.writeUseEvent(knownConnection, "success", null, active.httpStatus);
         return result;
       } finally {
         clearTimeout(timer);
@@ -475,7 +477,7 @@ export class Broker {
       const safe = error instanceof BlindDropError
         ? error
         : new BlindDropError("INTERNAL_ERROR");
-      this.writeUseEvent(knownConnection, errorOutcome(safe.code), safe.code);
+      this.writeUseEvent(knownConnection, errorOutcome(safe.code), safe.code, null);
       throw safe;
     }
   }
@@ -542,7 +544,9 @@ export class Broker {
       this.assertSession();
       this.authorizedConnection(input.connection);
       this.assertSafeResponse(response, prepared.patterns);
-      return this.releaseResponse(response, input.responseEncoding ?? "utf8");
+      const result = this.releaseResponse(response, input.responseEncoding ?? "utf8");
+      active.httpStatus = result.status;
+      return result;
     } finally {
       response.body.fill(0);
     }
@@ -595,6 +599,7 @@ export class Broker {
           prepared.patterns,
           active.controller.signal,
         );
+        active.httpStatus = response.status;
       },
     );
     this.assertActive(active);
@@ -1071,6 +1076,7 @@ export class Broker {
     connection: string | null,
     outcome: UseEvent["outcome"],
     code: ErrorCode | null,
+    httpStatus: number | null,
   ): void {
     if (this.logFd === null) {
       return;
@@ -1081,6 +1087,7 @@ export class Broker {
       connection,
       outcome,
       code,
+      httpStatus,
     };
     try {
       writeSync(this.logFd, `${JSON.stringify(event)}\n`, undefined, "utf8");

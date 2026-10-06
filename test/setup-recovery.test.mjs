@@ -38,7 +38,7 @@ test('Lock All revokes access and a complete setup restores into fresh locked st
     assert.equal(response.status, 200, `${path}: ${JSON.stringify(result)}`);
     return result;
   };
-  const execute = async () => {
+  const execute = async (connection = 'service') => {
     const state = await api('/api/state');
     assert.notEqual(state.session, null, JSON.stringify(state));
     const session = JSON.parse(await readFile(state.sessionFilePath, 'utf8'));
@@ -47,7 +47,7 @@ test('Lock All revokes access and a complete setup restores into fresh locked st
       await client.connect(new StreamableHTTPClientTransport(new URL(session.mcpUrl), {
         requestInit: { headers: { Authorization: `Bearer ${session.token}` } },
       }));
-      const result = await client.callTool({ name: 'execute_http', arguments: { connection: 'service', path: '/identity' } });
+      const result = await client.callTool({ name: 'execute_http', arguments: { connection, path: '/identity' } });
       assert.equal(result.structuredContent.status, 200);
       return JSON.parse(result.structuredContent.body).authenticated;
     } finally { await client.close(); }
@@ -76,7 +76,27 @@ test('Lock All revokes access and a complete setup restores into fresh locked st
     assert.deepEqual(created.vaults.map(vault => vault.name), ['work']);
     const opened = await api('/api/vault/open', { name: 'personal', path: importedPath });
     assert.deepEqual(opened.vaults.map(vault => vault.name), ['work', 'personal']);
+    assert.equal(opened.vaults.find(vault => vault.name === 'personal').registered, true);
     createVault(eagerDefaultPath, passphrases.personal);
+    await api('/api/vault/unlock', { name: 'personal', passphrase: passphrases.personal });
+    await api('/api/connection/import', { vault: 'personal', name: 'personal-service',
+      definition: { origin, auth: { type: 'bearer', secret: 'personal#personal-service#value' }, allowPrivate: true, enabled: true },
+      secrets: { 'personal-service': { type: 'api-key', fields: { value: { value: credential, label: 'Token', masked: true, multiline: false } } } } });
+    const relocatedPersonalPath = join(sourceHome, 'personal-relocated.enc');
+    await api('/api/vault/backup', { vault: 'personal', path: relocatedPersonalPath });
+    await rm(importedPath);
+    const missingPersonal = (await api('/api/state')).vaults.find(vault => vault.name === 'personal');
+    assert.equal(missingPersonal.registered, true);
+    assert.equal(missingPersonal.exists, false);
+    assert.equal(missingPersonal.unlocked, true,
+      'a moved archive can still have its old passphrase held until the owner locates it');
+    const relinked = await api('/api/vault/open', { name: 'personal', path: relocatedPersonalPath });
+    assert.equal(relinked.vaults.find(vault => vault.name === 'personal').path, relocatedPersonalPath);
+    assert.equal(relinked.vaults.find(vault => vault.name === 'personal').unlocked, false,
+      'relinking a missing archive releases the old held passphrase');
+    await api('/api/vault/unlock', { name: 'personal', passphrase: passphrases.personal });
+    assert.equal(await execute('personal-service'), true,
+      'same-name relink preserves the qualified reference and authenticates');
     await api('/api/connection/import', { vault: 'work', name: 'service',
       definition: { origin, auth: { type: 'bearer', secret: 'work#service#value' }, allowPrivate: true, enabled: true },
       secrets: { service: { type: 'api-key', fields: { value: { value: credential, label: 'Token', masked: true, multiline: false } } } } });
@@ -116,7 +136,10 @@ test('Lock All revokes access and a complete setup restores into fresh locked st
 
     process.env.HOME = restoredHome;
     ui = await startOwnerUi({ sessionPort: 0, configDir: restoredConfig });
-    assert.equal((await api('/api/state')).vaults.some(vault => vault.exists), false);
+    const firstUse = await api('/api/state');
+    assert.equal(firstUse.vaults.some(vault => vault.exists), false);
+    assert.equal(firstUse.vaults[0].registered, false);
+    await api('/api/settings', { appearance: 'light' });
     const restored = await api('/api/setup/restore', { path: backupPath });
     assert.equal(restored.vaults.every(vault => !vault.unlocked), true);
     assert.equal(restored.session, null);

@@ -18,13 +18,14 @@ contextBridge.exposeInMainWorld("desktop", {
   setScreen: name => ipcRenderer.invoke("desktop:set-screen", name),
   /** @param {string} [tab] */
   openSettings: tab => ipcRenderer.invoke("desktop:open-settings", tab),
-  /** @param {(name: string) => void} callback */
+  /** @param {string} name */
+  sendMainCommand: name => ipcRenderer.invoke("desktop:send-main-command", name),
+  /** @param {(name: string, detail?: unknown) => void} callback */
   onCommand: callback => {
-    ipcRenderer.on("command", (_event, name) => callback(name));
+    ipcRenderer.on("command", (_event, name, detail) => callback(name, detail));
   },
-  /** @param {{ openAtLogin: boolean, lockOnSleep: boolean, lockOnScreenLock: boolean, sessionPort: number }} settings */
+  /** @param {{ appearance: "system" | "light" | "dark", openAtLogin: boolean, showDockIcon: boolean, lockOnSleep: boolean, lockOnScreenLock: boolean, idleLockMinutes: 0 | 1 | 5 | 15 | 30 | 60, sessionPort: number }} settings */
   applySettings: settings => ipcRenderer.invoke("desktop:apply-settings", settings),
-  openReleasePage: () => ipcRenderer.invoke("desktop:open-release-page"),
   getIntegrations: () => ipcRenderer.invoke("desktop:get-integrations"),
   /** @param {{ host: "claude" | "codex", action: "install" | "update" | "remove" }} input */
   manageIntegration: input => ipcRenderer.invoke("desktop:manage-integration", input),

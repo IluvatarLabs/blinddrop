@@ -8,6 +8,9 @@ import { Broker, DEFAULT_LIMITS, STREAM_LIMITS } from "./broker.js";
 import { BlindDropError, publicError, type ErrorCode } from "./errors.js";
 import { createMcpServer, MAX_MCP_MESSAGE_BYTES } from "./mcp.js";
 
+const DYNAMIC_PORT_MIN = 49_152;
+const MAX_PORT = 65_535;
+
 /** The one status mapping for every static error code both listeners return. */
 const ERROR_STATUS: Record<ErrorCode, number> = {
   INVALID_INPUT: 400,
@@ -138,6 +141,20 @@ function writeChunk(response: ServerResponse, chunk: Buffer, signal: AbortSignal
   });
 }
 
+function systemErrorCode(error: unknown): string | undefined {
+  return typeof error === "object" && error !== null && "code" in error
+    ? String((error as { code: unknown }).code)
+    : undefined;
+}
+
+function nextPort(port: number, initial: number): number | undefined {
+  if (initial < DYNAMIC_PORT_MIN) {
+    return port < MAX_PORT ? port + 1 : undefined;
+  }
+  const next = port === MAX_PORT ? DYNAMIC_PORT_MIN : port + 1;
+  return next === initial ? undefined : next;
+}
+
 /** One owner-unlocked, finite loopback session. No process-global lifecycle. */
 export async function startHttpSession(
   broker: Broker,
@@ -259,14 +276,31 @@ export async function startHttpSession(
   }
 
   try {
-    await new Promise<void>((resolve, reject) => {
-      const onError = () => reject(new BlindDropError("PORT_UNAVAILABLE"));
-      server.once("error", onError);
-      server.listen(port, "127.0.0.1", () => {
-        server.off("error", onError);
-        resolve();
-      });
-    });
+    let candidate = port;
+    while (true) {
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const onError = (error: Error) => {
+            server.off("listening", onListening);
+            reject(error);
+          };
+          const onListening = () => {
+            server.off("error", onError);
+            resolve();
+          };
+          server.once("error", onError);
+          server.once("listening", onListening);
+          server.listen(candidate, "127.0.0.1");
+        });
+        break;
+      } catch (error) {
+        const next = candidate === 0 || systemErrorCode(error) !== "EADDRINUSE"
+          ? undefined
+          : nextPort(candidate, port);
+        if (next === undefined) throw new BlindDropError("PORT_UNAVAILABLE");
+        candidate = next;
+      }
+    }
   } catch (error) {
     await close();
     throw error;

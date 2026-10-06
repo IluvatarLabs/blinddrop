@@ -61,9 +61,9 @@ async function freePort() {
   return port;
 }
 
-async function holdPort() {
+async function holdPort(requestedPort = 0) {
   const server = createNetServer(socket => socket.destroy());
-  server.listen(0, '127.0.0.1');
+  server.listen(requestedPort, '127.0.0.1');
   await once(server, 'listening');
   const { port } = server.address();
   let released = false;
@@ -336,7 +336,7 @@ test('the owner UI signs multi-field secret requests, keeps values on replace, a
   assert.equal(initial.configDir, configDir);
   assert.equal(initial.sessionFilePath, sessionFilePath);
   assert.equal(initial.logPath, logPath);
-  assert.deepEqual(initial.vaults, [{ name: 'default', path: defaultPath, exists: false, unlocked: false }]);
+  assert.deepEqual(initial.vaults, [{ name: 'default', path: defaultPath, registered: false, exists: false, unlocked: false }]);
   assert.equal(initial.session, null);
   assert.equal(initial.sessionError, null);
 
@@ -348,7 +348,7 @@ test('the owner UI signs multi-field secret requests, keeps values on replace, a
     token: ownerToken, body: { name: 'default', path: defaultPath, passphrase },
   });
   assert.equal(created.status, 200);
-  assert.deepEqual(created.json.vaults, [{ name: 'default', path: defaultPath, exists: true, unlocked: true }]);
+  assert.deepEqual(created.json.vaults, [{ name: 'default', path: defaultPath, registered: true, exists: true, unlocked: true }]);
   assert.equal(created.json.session, null);
   assert.equal(created.json.sessionError, null);
   // `default` is reserved for the default path.
@@ -696,7 +696,7 @@ test('two vaults: a cross-vault connection is usable only when both are unlocked
   t.diagnostic('A cross-vault connection served only while both vaults were unlocked; locking the second dropped exactly it, rotated the session token/file, and left the first-vault-only connection working.');
 });
 
-test('an unavailable session port leaves the vault unlocked and clears when the port changes', { timeout: 60_000 }, async t => {
+test('a held saved port advances to a working session and persists the actual port', { timeout: 60_000 }, async t => {
   responses.length = 0;
   const dir = await mkdtemp(join(tmpdir(), 'blinddrop-owner-port-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
@@ -707,6 +707,24 @@ test('an unavailable session port leaves the vault unlocked and clears when the 
   const sessionFilePath = join(configDir, 'session.json');
   const passphrase = `disposable-port-passphrase-${randomBytes(18).toString('hex')}`;
   const apiToken = randomBytes(24).toString('hex');
+  let authenticatedRequests = 0;
+
+  const receiver = createHttpsServer({
+    key: await readFile(keyPath),
+    cert: await readFile(certPath),
+  }, (request, response) => {
+    if (request.headers.authorization === `Bearer ${apiToken}`) authenticatedRequests++;
+    response.writeHead(request.headers.authorization === `Bearer ${apiToken}` ? 200 : 401, {
+      'content-type': 'application/json',
+    });
+    response.end('{"reachable":true}');
+  });
+  receiver.listen(0, '127.0.0.1');
+  await once(receiver, 'listening');
+  t.after(() => {
+    receiver.close();
+    receiver.closeAllConnections();
+  });
 
   const held = await holdPort();
   t.after(() => held.release());
@@ -724,6 +742,10 @@ test('an unavailable session port leaves the vault unlocked and clears when the 
   const port = ready.port;
   const ownerToken = ready.token;
 
+  const initialSettings = (await api(port, 'GET', '/api/settings', { token: ownerToken })).json;
+  assert.ok(initialSettings.sessionPort >= 49_152 && initialSettings.sessionPort <= 65_535);
+  assert.equal(JSON.parse(readFileSync(join(configDir, 'settings.json'), 'utf8')).sessionPort, initialSettings.sessionPort);
+
   assert.equal((await api(port, 'POST', '/api/settings', {
     token: ownerToken, body: { sessionPort: held.port },
   })).json.sessionPort, held.port);
@@ -736,36 +758,41 @@ test('an unavailable session port leaves the vault unlocked and clears when the 
   const imported = await api(port, 'POST', '/api/connection/set', {
     token: ownerToken,
     body: {
-      vault: 'default', name: 'api', origin: 'https://api.example.com',
+      vault: 'default', name: 'api', origin: `https://127.0.0.1:${receiver.address().port}`,
+      allowPrivate: true,
       auth: { type: 'bearer', secret: 'api_token' },
     },
   });
   assert.equal(imported.status, 200);
 
-  // The vault stays open for editing; only the agent session could not bind.
-  const blocked = await api(port, 'GET', '/api/state', { token: ownerToken });
-  assert.equal(blocked.json.vaults[0].unlocked, true);
-  assert.equal(blocked.json.session, null);
-  assert.equal(blocked.json.sessionError, 'PORT_UNAVAILABLE');
-  assert.equal(existsSync(sessionFilePath), false);
-  assert.equal((await api(port, 'GET', '/api/list', { token: ownerToken })).status, 200);
+  const serving = await api(port, 'GET', '/api/state', { token: ownerToken });
+  assert.equal(serving.json.vaults[0].unlocked, true);
+  assert.notEqual(serving.json.session, null);
+  assert.equal(serving.json.sessionError, null);
+  const actualPort = Number(new URL(serving.json.session.mcpUrl).port);
+  assert.notEqual(actualPort, held.port);
+  assert.equal((await api(port, 'GET', '/api/settings', { token: ownerToken })).json.sessionPort, actualPort);
+  assert.equal(JSON.parse(readFileSync(join(configDir, 'settings.json'), 'utf8')).sessionPort, actualPort);
+  assert.equal(statSync(sessionFilePath).mode & 0o777, 0o600);
 
-  // Unlocking still opens the vault and re-reports the same reason.
+  const firstSession = JSON.parse(readFileSync(sessionFilePath, 'utf8'));
+  const firstAgent = await attach(firstSession.mcpUrl, firstSession.token);
+  const firstRequest = await execute(firstAgent, { connection: 'api', path: '/first' });
+  assert.equal(firstRequest.structuredContent.status, 200);
+  assert.deepEqual(JSON.parse(firstRequest.structuredContent.body), { reachable: true });
+  await firstAgent.close();
+
+  // A new session after locking reuses the actual saved port, rather than the held preference.
   assert.equal((await api(port, 'POST', '/api/vault/lock', { token: ownerToken, body: { name: 'default' } })).status, 200);
   const reopened = await api(port, 'POST', '/api/vault/unlock', { token: ownerToken, body: { name: 'default', passphrase } });
   assert.equal(reopened.status, 200);
   assert.equal(reopened.json.vaults[0].unlocked, true);
-  assert.equal(reopened.json.session, null);
-  assert.equal(reopened.json.sessionError, 'PORT_UNAVAILABLE');
-
-  await held.release();
-  const moved = await api(port, 'POST', '/api/settings', { token: ownerToken, body: { sessionPort: await freePort() } });
-  assert.equal(moved.status, 200);
-  const serving = await api(port, 'GET', '/api/state', { token: ownerToken });
-  assert.notEqual(serving.json.session, null);
-  assert.equal(serving.json.sessionError, null);
-  assert.equal(new URL(serving.json.session.mcpUrl).port, String(moved.json.sessionPort));
-  assert.equal(statSync(sessionFilePath).mode & 0o777, 0o600);
+  assert.equal(Number(new URL(reopened.json.session.mcpUrl).port), actualPort);
+  const secondSession = JSON.parse(readFileSync(sessionFilePath, 'utf8'));
+  const secondAgent = await attach(secondSession.mcpUrl, secondSession.token);
+  assert.equal((await execute(secondAgent, { connection: 'api', path: '/again' })).structuredContent.status, 200);
+  await secondAgent.close();
+  assert.equal(authenticatedRequests, 2);
 
   const shutdown = await api(port, 'POST', '/api/shutdown', { token: ownerToken, body: {} });
   assert.deepEqual(shutdown.json, { ok: true });
@@ -773,16 +800,73 @@ test('an unavailable session port leaves the vault unlocked and clears when the 
   const transcript = `${ui.stdout()}${await ui.stderr}${responses.join('')}`;
   assert.equal(transcript.includes(passphrase), false);
   assert.equal(transcript.includes(apiToken), false);
-  t.diagnostic('A held session port surfaced as a static session error without closing the vault, and the owner recovered it from Settings.');
+  t.diagnostic('A held saved port advanced to a useful authenticated session, persisted its actual endpoint, and the next session reused it.');
 });
 
 test('serve publishes the same session file only in HTTP mode and withdraws it on exit', async t => {
   const dir = await mkdtemp(join(tmpdir(), 'blinddrop-session-file-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
+  const home = join(dir, 'home');
+  await mkdir(home, { recursive: true });
   const vaultPath = join(dir, 'vault.enc');
   const sessionFilePath = join(dir, 'agent-session.json');
+  const settingsFilePath = join(home, '.config', 'blinddrop', 'settings.json');
   const passphrase = `disposable-serve-passphrase-${randomBytes(18).toString('hex')}`;
   const providerKey = randomBytes(32).toString('hex');
+  const runs = [];
+  t.after(async () => {
+    await Promise.all(runs.map(async run => {
+      if (run.child.exitCode === null && run.child.signalCode === null) run.child.kill('SIGTERM');
+      await run.exit;
+    }));
+  });
+
+  const spawnInHome = args => {
+    const previousHome = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      const run = spawnOwner(vaultPath, passphrase, args);
+      runs.push(run);
+      return run;
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+    }
+  };
+
+  const startServing = async portArgs => {
+    const run = spawnInHome([
+      'serve', '--http', '--allow', 'api', ...portArgs, '--ttl', '30',
+      '--session-file', sessionFilePath,
+    ]);
+    run.child.stdin.end();
+    const chunks = [];
+    run.child.stdout.on('data', chunk => chunks.push(Buffer.from(chunk)));
+    const readiness = await waitFor(() => {
+      const text = Buffer.concat(chunks).toString('utf8');
+      const newline = text.indexOf('\n');
+      return newline === -1 ? undefined : JSON.parse(text.slice(0, newline));
+    }, 'serve --http printed no readiness line');
+    const published = await waitFor(
+      () => (existsSync(sessionFilePath) ? JSON.parse(readFileSync(sessionFilePath, 'utf8')) : undefined),
+      'serve --http --session-file never published the session file',
+    );
+    assert.equal(statSync(sessionFilePath).mode & 0o777, 0o600);
+    assert.deepEqual(published, {
+      mcpUrl: readiness.mcpUrl,
+      token: readiness.token,
+      expiresAt: readiness.expiresAt,
+      connections: readiness.connections,
+    });
+    return { run, readiness, published };
+  };
+
+  const stopServing = async run => {
+    run.child.kill('SIGTERM');
+    assert.equal((await run.exit).code, 0);
+    assert.equal(await run.stderr, '');
+    assert.equal(existsSync(sessionFilePath), false);
+  };
 
   await owner(vaultPath, passphrase, ['init']);
   await owner(
@@ -799,7 +883,7 @@ test('serve publishes the same session file only in HTTP mode and withdraws it o
   ]);
 
   // Stdio mode has no local endpoint to publish, so the option is refused.
-  const refused = spawnOwner(vaultPath, passphrase, [
+  const refused = spawnInHome([
     'serve', '--allow', 'api', '--ttl', '30', '--session-file', sessionFilePath,
   ]);
   refused.child.stdin.end();
@@ -811,37 +895,32 @@ test('serve publishes the same session file only in HTTP mode and withdraws it o
   assert.equal(refusedStderr, 'INVALID_INPUT: Invalid input.\n');
   assert.equal(existsSync(sessionFilePath), false);
 
-  const serving = spawnOwner(vaultPath, passphrase, [
-    'serve', '--http', '--allow', 'api', '--port', '0', '--ttl', '30',
-    '--session-file', sessionFilePath,
-  ]);
-  serving.child.stdin.end();
-  const servingChunks = [];
-  serving.child.stdout.on('data', chunk => servingChunks.push(Buffer.from(chunk)));
-  const readiness = await waitFor(() => {
-    const text = Buffer.concat(servingChunks).toString('utf8');
-    const newline = text.indexOf('\n');
-    return newline === -1 ? undefined : JSON.parse(text.slice(0, newline));
-  }, 'serve --http printed no readiness line');
+  const first = await startServing([]);
+  const firstPort = Number(new URL(first.readiness.mcpUrl).port);
+  assert.ok(firstPort >= 49_152 && firstPort <= 65_535);
+  assert.equal(JSON.parse(readFileSync(settingsFilePath, 'utf8')).sessionPort, firstPort);
+  assert.equal(JSON.stringify(first.published).includes(passphrase), false);
+  assert.equal(JSON.stringify(first.published).includes(providerKey), false);
+  await stopServing(first.run);
 
-  const published = await waitFor(
-    () => (existsSync(sessionFilePath) ? JSON.parse(readFileSync(sessionFilePath, 'utf8')) : undefined),
-    'serve --http --session-file never published the session file',
-  );
-  assert.equal(statSync(sessionFilePath).mode & 0o777, 0o600);
-  assert.deepEqual(published, {
-    mcpUrl: readiness.mcpUrl,
-    token: readiness.token,
-    expiresAt: readiness.expiresAt,
-    connections: readiness.connections,
-  });
-  assert.equal(JSON.stringify(published).includes(passphrase), false);
-  assert.equal(JSON.stringify(published).includes(providerKey), false);
+  const held = await holdPort(firstPort);
+  t.after(() => held.release());
+  const fallback = await startServing([]);
+  const fallbackPort = Number(new URL(fallback.readiness.mcpUrl).port);
+  assert.notEqual(fallbackPort, firstPort);
+  assert.equal(JSON.parse(readFileSync(settingsFilePath, 'utf8')).sessionPort, fallbackPort);
+  await stopServing(fallback.run);
+  await held.release();
 
-  serving.child.kill('SIGTERM');
-  const servingExit = await serving.exit;
-  assert.equal(servingExit.code, 0);
-  assert.equal(await serving.stderr, '');
-  assert.equal(existsSync(sessionFilePath), false);
-  t.diagnostic('The installed serve command published its own endpoint file with owner-only permissions and withdrew it when the session ended.');
+  const customPort = await freePort();
+  const custom = await startServing(['--port', String(customPort)]);
+  assert.equal(Number(new URL(custom.readiness.mcpUrl).port), customPort);
+  assert.equal(JSON.parse(readFileSync(settingsFilePath, 'utf8')).sessionPort, customPort);
+  await stopServing(custom.run);
+
+  const temporary = await startServing(['--port', '0']);
+  assert.ok(Number(new URL(temporary.readiness.mcpUrl).port) > 0);
+  assert.equal(JSON.parse(readFileSync(settingsFilePath, 'utf8')).sessionPort, customPort);
+  await stopServing(temporary.run);
+  t.diagnostic('The installed serve command chose and reused one saved random port, advanced after a collision, saved an explicit custom port, left an explicit temporary port unsaved, and withdrew each published session file.');
 });

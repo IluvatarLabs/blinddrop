@@ -255,16 +255,32 @@ function validateSetupFolder(sourcePath: string): ValidatedSetup {
   return { registry, connections, groups, settings, archives };
 }
 
-function assertEmptyDestination(configDir: string): boolean {
+type RestoreDestination = "absent" | "empty" | "preferences";
+
+/**
+ * Restore remains a fresh-state operation. A first-use app may already have
+ * written settings such as Appearance; that file is preference state, not a
+ * vault setup, provided it carries no vault pointers and is the directory's
+ * only entry.
+ */
+function restoreDestination(configDir: string): RestoreDestination {
   try {
     const stat = lstatSync(configDir);
-    if (!stat.isDirectory() || readdirSync(configDir).length !== 0) {
+    if (!stat.isDirectory()) throw new BlindDropError("VAULT_EXISTS");
+    const entries = readdirSync(configDir);
+    if (entries.length === 0) return "empty";
+    if (entries.length !== 1 || entries[0] !== basename(settingsPath(configDir))) {
       throw new BlindDropError("VAULT_EXISTS");
     }
-    return true;
+    requireRegularReadableFile(settingsPath(configDir));
+    const settings = readSettings(configDir);
+    if (settings.lastVault !== null || settings.recentVaults.length !== 0) {
+      throw new BlindDropError("VAULT_EXISTS");
+    }
+    return "preferences";
   } catch (error) {
     if (error instanceof BlindDropError) throw error;
-    if (errorCode(error) === "ENOENT") return false;
+    if (errorCode(error) === "ENOENT") return "absent";
     throw new BlindDropError("STORAGE_ERROR");
   }
 }
@@ -274,7 +290,7 @@ export function restoreSetup(configDir: string, sourcePath: string): SetupBackup
   assertPath(configDir);
   const setup = validateSetupFolder(sourcePath);
   const destination = resolve(configDir);
-  const destinationExisted = assertEmptyDestination(destination);
+  const destinationState = restoreDestination(destination);
   try {
     mkdirSync(dirname(destination), { recursive: true, mode: 0o700 });
   } catch {
@@ -282,8 +298,10 @@ export function restoreSetup(configDir: string, sourcePath: string): SetupBackup
   }
 
   const stage = temporaryDirectory(destination);
+  const rollback = temporaryDirectory(destination);
   let published = false;
   let removedDestination = false;
+  let displacedPreferences = false;
   try {
     makePrivateDirectory(stage);
     makePrivateDirectory(join(stage, "vaults"));
@@ -314,19 +332,32 @@ export function restoreSetup(configDir: string, sourcePath: string): SetupBackup
       ui: { ...setup.settings.ui },
     });
 
-    if (assertEmptyDestination(destination)) {
+    if (restoreDestination(destination) !== destinationState) {
+      throw new BlindDropError("VAULT_EXISTS");
+    }
+    if (destinationState === "preferences") {
+      renameSync(destination, rollback);
+      displacedPreferences = true;
+    } else if (destinationState === "empty") {
       rmdirSync(destination);
       removedDestination = true;
     }
     renameSync(stage, destination);
     published = true;
+    if (displacedPreferences) removeTree(rollback);
   } catch (error) {
     if (error instanceof BlindDropError) throw error;
     throw new BlindDropError("STORAGE_ERROR");
   } finally {
     if (!published) {
       removeTree(stage);
-      if (destinationExisted && removedDestination && !existsSync(destination)) {
+      if (displacedPreferences && !existsSync(destination) && pathExists(rollback)) {
+        try {
+          renameSync(rollback, destination);
+        } catch {
+          // The intact preferences remain at the private rollback path.
+        }
+      } else if (destinationState === "empty" && removedDestination && !existsSync(destination)) {
         try {
           mkdirSync(destination, { mode: 0o700 });
         } catch {

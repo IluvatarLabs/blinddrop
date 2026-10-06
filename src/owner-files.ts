@@ -4,7 +4,7 @@
 // reachable and none of it holds a secret value. Nothing here prompts or
 // prints.
 
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomInt } from "node:crypto";
 import {
   closeSync,
   fstatSync,
@@ -41,7 +41,9 @@ export interface OwnerSettings {
   sessionFile: boolean;
   lockOnSleep: boolean;
   lockOnScreenLock: boolean;
+  idleLockMinutes: number;
   openAtLogin: boolean;
+  showDockIcon: boolean;
   lastVault: string | null;
   recentVaults: string[];
   lastBackupAt: string | null;
@@ -66,15 +68,20 @@ export interface UseEventRecord {
   connection: string | null;
   outcome: "success" | "denied" | "blocked" | "failed";
   code: string | null;
+  httpStatus: number | null;
 }
 
-export const SETTINGS_DEFAULTS: OwnerSettings = {
+const DYNAMIC_PORT_MIN = 49_152;
+const DYNAMIC_PORT_MAX_EXCLUSIVE = 65_536;
+
+export const SETTINGS_DEFAULTS: Omit<OwnerSettings, "sessionPort"> = {
   appearance: "system",
-  sessionPort: 8787,
   sessionFile: true,
   lockOnSleep: true,
   lockOnScreenLock: false,
+  idleLockMinutes: 0,
   openAtLogin: false,
+  showDockIcon: true,
   lastVault: null,
   recentVaults: [],
   lastBackupAt: null,
@@ -93,7 +100,9 @@ const SettingsSchema = z
     sessionFile: z.boolean(),
     lockOnSleep: z.boolean(),
     lockOnScreenLock: z.boolean(),
+    idleLockMinutes: z.union([z.literal(0), z.literal(1), z.literal(5), z.literal(15), z.literal(30), z.literal(60)]),
     openAtLogin: z.boolean(),
+    showDockIcon: z.boolean(),
     lastVault: z.string().min(1).nullable(),
     recentVaults: z.array(z.string().min(1)).max(MAX_RECENT_VAULTS),
     lastBackupAt: z.string().min(1).nullable(),
@@ -117,6 +126,7 @@ const UseEventSchema = z
     connection: z.string().nullable(),
     outcome: z.enum(["success", "denied", "blocked", "failed"]),
     code: z.string().nullable(),
+    httpStatus: z.number().int().min(100).max(999).nullable().optional(),
   })
   .strict();
 
@@ -198,6 +208,15 @@ export function activityLogPath(vaultPath: string): string {
   return `${vaultPath}.events.jsonl`;
 }
 
+function defaultSettings(sessionPort?: number): OwnerSettings {
+  return {
+    ...SETTINGS_DEFAULTS,
+    sessionPort: sessionPort ?? randomInt(DYNAMIC_PORT_MIN, DYNAMIC_PORT_MAX_EXCLUSIVE),
+    ui: {},
+    recentVaults: [],
+  };
+}
+
 function mergeSettings(base: OwnerSettings, patch: Partial<OwnerSettings>): OwnerSettings {
   const merged: OwnerSettings = { ...base, ...patch };
   merged.recentVaults = [...new Set(merged.recentVaults)].slice(0, MAX_RECENT_VAULTS);
@@ -205,15 +224,15 @@ function mergeSettings(base: OwnerSettings, patch: Partial<OwnerSettings>): Owne
   return merged;
 }
 
-/** A missing or unreadable file is the default configuration; a damaged one is not. */
-export function readSettings(configDir: string): OwnerSettings {
+function readStoredSettings(configDir: string): Partial<OwnerSettings> | undefined {
   const path = settingsPath(configDir);
   assertPath(path);
   let text: string;
   try {
     text = readFileSync(path, "utf8");
-  } catch {
-    return { ...SETTINGS_DEFAULTS, ui: {}, recentVaults: [] };
+  } catch (error) {
+    if (errorCode(error) === "ENOENT") return undefined;
+    throw new BlindDropError("STORAGE_ERROR");
   }
   let value: unknown;
   try {
@@ -225,7 +244,18 @@ export function readSettings(configDir: string): OwnerSettings {
   if (!parsed.success) {
     throw new BlindDropError("STORAGE_ERROR");
   }
-  return mergeSettings(SETTINGS_DEFAULTS, parsed.data);
+  return parsed.data;
+}
+
+/** Missing settings, or a valid legacy file without a port, gets one saved random port. */
+export function readSettings(configDir: string): OwnerSettings {
+  const stored = readStoredSettings(configDir);
+  const generatedPort = stored?.sessionPort === undefined;
+  const merged = mergeSettings(defaultSettings(stored?.sessionPort), stored ?? {});
+  if (stored === undefined || generatedPort) {
+    writeOwnerFile(settingsPath(configDir), `${JSON.stringify(merged)}\n`);
+  }
+  return merged;
 }
 
 /** Validates the owner's patch, merges it over the stored file and republishes. */
@@ -234,7 +264,9 @@ export function writeSettings(configDir: string, patch: unknown): OwnerSettings 
   if (!parsed.success) {
     throw new BlindDropError("INVALID_INPUT");
   }
-  const merged = mergeSettings(readSettings(configDir), parsed.data);
+  const stored = readStoredSettings(configDir);
+  const port = parsed.data.sessionPort ?? stored?.sessionPort;
+  const merged = mergeSettings(defaultSettings(port), { ...(stored ?? {}), ...parsed.data });
   writeOwnerFile(settingsPath(configDir), `${JSON.stringify(merged)}\n`);
   return merged;
 }
@@ -346,7 +378,7 @@ function tailEvents(logPath: string): UseEventRecord[] {
       continue;
     }
     const parsed = UseEventSchema.safeParse(value);
-    if (parsed.success) events.push(parsed.data);
+    if (parsed.success) events.push({ ...parsed.data, httpStatus: parsed.data.httpStatus ?? null });
   }
   return events;
 }

@@ -32,16 +32,20 @@ subscription or hosted account to maintain.
 
 ## Install
 
-Download the Mac app from the [latest release](https://github.com/IluvatarLabs/blinddrop/releases/latest), move **BlindDrop.app** into Applications, and open it. The app includes its runtime: no Node installation, global CLI, PATH changes or terminal are needed. Check the release notes for the exact architecture and signing/notarization status of the downloadable build.
+Download the Mac app from the [BlindDrop 0.6.0 release](https://github.com/IluvatarLabs/blinddrop/releases/tag/v0.6.0), move **BlindDrop.app** into Applications, and open it. The download is for Apple silicon Macs and is unsigned and not notarized. The app includes its runtime: no Node installation, global CLI, PATH changes or terminal are needed.
+
+If macOS blocks the first launch, follow [Apple's instructions for opening an app from an unidentified developer](https://support.apple.com/en-us/102445).
 
 1. Create a vault with a passphrase, or open an existing encrypted vault.
 2. Choose a connection template, enter its credential in the owner window, and save.
 3. Open **Settings → Sessions** and install the integration for Claude Code or local Codex. Follow the host trust/reload instruction shown there.
 4. Unlock the vaults the connection needs, then ask the agent to use that connection.
 
-Closing the window keeps the current session running. The Dock or menu-bar icon reopens it. **Lock All** revokes access, including with no window open; **Quit** stops the app. Every launch starts locked.
+Connections hold service origins and authentication settings; Secrets hold the encrypted credentials they reference. A template identifies the credentials it needs. When editing a connection, you can choose an existing stored secret without re-entering its value. **Import .env** uses Node's standard dotenv parsing and lets you review names and selected rows before anything is saved.
 
-To upgrade, quit BlindDrop, replace the app in Applications, then reopen it. Vaults and configuration stay outside the app bundle. Settings links to the release page; there is no automatic updater. If you move the app, use **Update** beside each installed integration to refresh its bundled-helper path.
+Closing the window keeps the current session running. A normal Dock or menu-bar click reopens it; right-clicking the menu-bar icon offers Open and Quit. **Settings → General → Show Dock icon** can hide the Dock icon while leaving menu-bar access available. **Settings → Security** can optionally lock all vaults after system inactivity. **Lock All** revokes access, including with no window open; **Quit** stops the app. Every launch starts locked.
+
+To upgrade, quit BlindDrop, replace the app in Applications, then reopen it. Vaults and configuration stay outside the app bundle. There is no automatic updater; use the [release page](https://github.com/IluvatarLabs/blinddrop/releases). If you move the app, use **Update** beside each installed integration to refresh its bundled-helper path.
 
 ### Optional command-line package
 
@@ -53,7 +57,7 @@ export PATH="$HOME/.local/bin:$PATH"
 blinddrop --help
 ```
 
-BlindDrop is not published to the npm registry. Install the release tarball by its path. These shell steps are only for CLI use. The native app targets macOS arm64; Windows/Linux 0.6.0 workflows are unverified.
+BlindDrop is not published to the npm registry. Install the release tarball by its path. These shell steps are only for CLI use. The CLI runs without Electron; the downloadable native app is macOS arm64 only, with no Windows or Linux desktop build.
 
 ## Optional CLI quick start
 
@@ -72,6 +76,11 @@ blinddrop connection set github \
 Run `init` once to create the vault. Passphrases and keys are entered at hidden
 prompts. `github-pat` is the name of the saved key; `github` is the connection
 that uses it.
+
+Terminal administration operates one archive at a time, and `secret set`
+creates or replaces a single-value secret. Use the browser owner page or Mac app
+for registered multi-vault workflows, typed multi-field secrets and connections
+that draw fields from more than one vault.
 
 The installed package includes an HTTP client. With the user-local prefix
 above, make a request with:
@@ -115,6 +124,15 @@ A new session gets a new token. The owner page and app instead recompute their
 implicit session as vaults and records change. The MCP tools are
 `list_connections` and `execute_http`.
 
+App and CLI HTTP sessions share a randomly chosen port saved in Settings. If it
+is busy, BlindDrop advances to the next available port and saves the actual
+listener. Change the preference in **Settings → Sessions** or with CLI
+`--port PORT`; explicit `--port 0` stays temporary. App-managed integrations
+follow the actual endpoint. For a manually configured plugin, set
+`BLINDDROP_MCP_URL` to the reported `mcpUrl` before starting the host, and
+restart or reload the host if that URL changes. The headers helper refreshes the
+session credential, but cannot change the host's configured URL.
+
 The [client guide](CLIENTS.md) covers MCP configuration, the Claude SDK,
 ordinary HTTP clients, and OAuth APIs. BlindDrop supports common API-key
 placements, Basic authentication, OAuth grants, JWT bearer exchange, AWS
@@ -147,7 +165,7 @@ at mode 0600 and is removed when the session ends.
 
 Use **Back Up Setup** to copy all registered encrypted vaults plus connection definitions, registry, groups and settings. Each vault retains its own passphrase. The other files are owner-only plaintext metadata and references; session tokens and Activity are excluded. A missing archive fails the backup instead of silently producing an incomplete copy.
 
-Use **Restore Setup** before setting up a new installation. It requires empty app state, rebases archive paths, and starts with every vault locked. It never merges or overwrites existing data. **Export Encrypted Vault** copies one archive only. There is no passphrase recovery bypass. `blinddrop passwd` re-encrypts the selected vault; older backups still need their old passphrase.
+Use **Restore Setup** before adding vault or connection data to a new installation. A first launch containing only saved preferences is accepted and those preferences are replaced by the backup. Registered vaults, connections, groups or unknown files prevent restore. Restore rebases archive paths, starts with every vault locked, and never merges or overwrites existing data. **Export Encrypted Vault** copies one archive only. There is no passphrase recovery bypass. `blinddrop passwd` re-encrypts the selected vault; older backups still need their old passphrase.
 
 BlindDrop protects credentials through its own interfaces. Your agent harness
 and operating system must restrict access to the vault's unlock input and the

@@ -3,6 +3,7 @@
 import { migrateConnections } from "./connection-store.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { closeSync, fstatSync, openSync, readSync } from "node:fs";
+import { dirname } from "node:path";
 import process from "node:process";
 import { TextDecoder } from "node:util";
 
@@ -29,6 +30,7 @@ import { BlindDropError, publicError } from "./errors.js";
 import { startHttpSession, type HttpSession } from "./http.js";
 import { readOwnerInput } from "./input.js";
 import { serveMcp } from "./mcp.js";
+import { readSettings, writeSettings } from "./owner-files.js";
 import {
   oauthLogin,
   openSystemBrowser,
@@ -51,6 +53,7 @@ interface GlobalOptions {
 interface RunOptions {
   baseUrlEnv?: string;
   apiKeyEnv?: string;
+  port?: string;
   ttl: string;
 }
 
@@ -209,12 +212,20 @@ async function terminateChild(child: ChildProcess, closed: Promise<ChildExit>): 
 
 async function startOwnedHttpSession(
   session: BrokerSession,
-  port: number,
+  explicitPort?: number,
 ): Promise<HttpSession> {
+  let http: HttpSession | undefined;
   try {
-    return await startHttpSession(session.broker, session.expiresAt, { port });
+    const configDir = dirname(defaultVaultPath());
+    const port = explicitPort ?? readSettings(configDir).sessionPort;
+    http = await startHttpSession(session.broker, session.expiresAt, { port });
+    if (explicitPort !== 0) {
+      writeSettings(configDir, { sessionPort: Number(new URL(http.mcpUrl).port) });
+    }
+    return http;
   } catch (error) {
-    session.broker.close();
+    if (http !== undefined) await http.close();
+    else session.broker.close();
     throw error;
   }
 }
@@ -450,13 +461,13 @@ async function main(): Promise<void> {
     .description("serve one finite, scoped MCP session")
     .requiredOption("--allow <connection>", "authorize an exact connection name", collect, [])
     .option("--http", "serve MCP and SDK requests on an authenticated loopback endpoint")
-    .option("--port <port>", "loopback port for HTTP mode", "0")
+    .option("--port <port>", "loopback port for HTTP mode")
     .option("--ttl <seconds>", "session lifetime in seconds (maximum 86400)", "3600")
     .option("--session-file <path>", "publish this HTTP session's local endpoint and token to a 0600 file")
     .action(async (options: {
       allow: string[];
       http?: boolean;
-      port: string;
+      port?: string;
       ttl: string;
       sessionFile?: string;
     }) => {
@@ -464,8 +475,8 @@ async function main(): Promise<void> {
         throw new BlindDropError("INVALID_INPUT");
       }
       const ttl = parseTtl(options.ttl);
-      const port = parsePort(options.port);
-      if (options.http !== true && (port !== 0 || options.sessionFile !== undefined)) {
+      const port = options.port === undefined ? undefined : parsePort(options.port);
+      if (options.http !== true && (port !== undefined || options.sessionFile !== undefined)) {
         throw new BlindDropError("INVALID_INPUT");
       }
       const passphrase = await readPassphrase();
@@ -555,6 +566,7 @@ async function main(): Promise<void> {
     .argument("<connection>", "authorize one exact connection name")
     .option("--base-url-env <name>", "also set this environment variable to the local base URL")
     .option("--api-key-env <name>", "also set this environment variable to the session token")
+    .option("--port <port>", "loopback port for the local session")
     .option("--ttl <seconds>", "session lifetime in seconds (maximum 86400)", "3600")
     .argument("<command>", "client executable after --")
     .argument("[args...]", "client arguments after --")
@@ -566,6 +578,7 @@ async function main(): Promise<void> {
     ) => {
       validateName(connection);
       const ttl = parseTtl(options.ttl);
+      const port = options.port === undefined ? undefined : parsePort(options.port);
       validateRunEnvironment(options);
       const passphrase = await readPassphrase();
       const managed = migrateConnections(globalOptions().vault, passphrase);
@@ -575,7 +588,7 @@ async function main(): Promise<void> {
         ttl,
         { connections: managed.connections },
       );
-      const http = await startOwnedHttpSession(session, 0);
+      const http = await startOwnedHttpSession(session, port);
       process.exitCode = await runChild(http, connection, executable, args, options);
     });
 

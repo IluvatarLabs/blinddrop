@@ -16,6 +16,7 @@ const osxNotarize =
 const packagerConfig = {
   name: "BlindDrop",
   appBundleId: "com.iluvatarlabs.blinddrop",
+  icon: fileURLToPath(new URL("assets/app.icns", import.meta.url)),
   asar: true,
   // The app stages this directory into host-managed plugin locations. Keep it
   // on the real filesystem: recursive fs.cp cannot traverse a directory inside

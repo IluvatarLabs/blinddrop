@@ -113,9 +113,9 @@ Which screen opens first follows the configured vault: a `--vault` path if you g
 
 Unlocking a vault starts or recomputes the agent session using the secrets now available; locking every vault, quitting, or closing the owner process ends it. There is no session to start or stop by hand. The session grants every connection that is enabled and whose referenced secret fields all exist, are enabled, and resolve in a currently unlocked vault; a connection missing one of those is shown as not in the session, with the reason. Every owner change — a secret or connection written, turned on, turned off or removed, a passphrase change, or a vault locked or unlocked — recomputes the session from the new snapshot, so a change applies without further action. Requests in flight during that restart fail.
 
-The session uses the port in Settings › Sessions, 8787 by default, and the maximum lifetime of 86400 seconds; it is renewed while the vault stays unlocked. If that port is already held by another process, the vault still unlocks for editing and the page reports `Port 8787 is in use. Agents cannot attach until it is changed in Settings › Sessions.`, naming the port it tried. Change the port there to start the session.
+The app and CLI HTTP sessions share the port in Settings › Sessions. On first use, a cryptographically random port from 49152–65535 is saved in `~/.config/blinddrop/settings.json`; existing saved choices are preserved. If occupied, startup tries the next port and saves the one it binds, wrapping within the dynamic range after 65535. A lower custom port scans upward to 65535. Other bind failures or exhaustion remain visible errors. Change the preference in Settings, or use `serve --http --port PORT` / `run --port PORT`; a nonzero override is saved after successful binding. Explicit `--port 0` chooses a temporary OS-assigned port without changing the preference. The owner page session lasts up to 86400 seconds and renews while a vault stays unlocked. Managed integrations follow the actual endpoint, including a collision during renewal with no window open; follow their host reload guidance. Manual clients must use the reported URL.
 
-While the session runs and Settings › Sessions › Agent access is on, which is the default, the session record is written to `~/.config/blinddrop/session.json` at mode 0600 with the MCP URL, session token, expiry and connection base URLs. It is always in the configuration directory, whatever path the vault file has, so the BlindDrop Claude Code plugin finds it. The file is deleted when the session ends. The CLI writes the same file only with `serve --http --session-file PATH`.
+While the session runs and Settings › Sessions › Agent access is on, which is the default, the session record is written to `~/.config/blinddrop/session.json` at mode 0600 with the MCP URL, session token, expiry and connection base URLs. It is always in the configuration directory, whatever path the vault file has, so the BlindDrop Claude Code plugin finds it. Its location is shown in Settings › Advanced. The file is deleted when the session ends. The CLI writes the same file only with `serve --http --session-file PATH`.
 
 ### Secrets and fields
 
@@ -124,6 +124,10 @@ A secret has a type and one or more named fields. Choosing a type in the field e
 Field ids use the same snake_case as the source you copy from (`aws_secret_access_key`, `client_secret`, `private_key`), so a field name matches what the connection consumes and there is nothing to translate. Several parts of one credential can therefore live as fields of one secret instead of separate secrets. The `blinddrop secret set` command still creates a single-value secret (one `value` field); the field editor is where typed multi-field secrets are built.
 
 A connection points at one field with a vault-qualified reference `vault#secret#field`. `secret#field` and a bare `secret` resolve in the default vault. A bare reference with no field resolves to the field named `value` — what a single-value or migrated secret uses — or to the only field of a single-field secret; a multi-field secret is addressed by field. The connection editor lets you select any stored field. On import or migration, unqualified references are bound to the selected/source vault and saved in the full form, so opening an old archive as another vault cannot use a same-named default-vault secret.
+
+The connection editor identifies an existing secret and field separately from a new value. Leaving the replacement value empty keeps the stored credential. Custom connections select the authentication method and credential placement; custom secrets add named fields independently.
+
+Import .env parses ordinary Node dotenv syntax, including unquoted inline comments, quoted hashes and quoted multiline values. Review destination names before saving. Parsing does not write the vault; final import keeps the existing collision checks and optional source-to-Trash choice.
 
 ### Connection storage and migration
 
@@ -150,12 +154,14 @@ Settings are stored in `~/.config/blinddrop/settings.json` at mode 0600 and read
 
 | Field | Type and default | Effect |
 |---|---|---|
-| `appearance` | `"system"`, `"light"` or `"dark"`; default `"system"` | Page theme |
-| `sessionPort` | integer 1–65535; default 8787 | Port the agent session listens on |
+| `appearance` | `"system"`, `"light"` or `"dark"`; default `"system"` | Page and native Mac appearance |
+| `sessionPort` | integer 1–65535; random 49152–65535 on first use | Saved preferred port for app and CLI HTTP sessions; advances if occupied |
 | `sessionFile` | boolean; default true | Write the session file while the session runs |
 | `lockOnSleep` | boolean; default true | App only: lock when the computer sleeps |
 | `lockOnScreenLock` | boolean; default false | App only: lock when the screen locks |
+| `idleLockMinutes` | 0, 1, 5, 15, 30 or 60; default 0 (Off) | App only: lock all vaults after this many minutes of system inactivity, including with no window open |
 | `openAtLogin` | boolean; default false | App only: open at login |
+| `showDockIcon` | boolean; default true | App only: show the Dock icon; hiding it keeps the menu-bar item available |
 | `lastVault` | path or null | Vault opened at the next start |
 | `recentVaults` | up to 10 paths, newest first | The Welcome screen's list of vaults to open |
 | `lastBackupAt` | timestamp or null | Shown in Settings › Vault |
@@ -163,7 +169,7 @@ Settings are stored in `~/.config/blinddrop/settings.json` at mode 0600 and read
 
 ### Groups
 
-Groups are owner-side labels for connections. The encrypted archive does not store them and agents never see them: they live in a `<config dir>/groups.json` file at mode 0600 keyed by connection name, shared across vaults. Old `vault#connection` keys migrate when their archive is unlocked. Group names obey the same rules as other local names; at most 64 groups, and at most 16 groups per connection.
+Groups are owner-side labels for connections. The encrypted archive does not store them and agents never see them: they live in a `<config dir>/groups.json` file at mode 0600 keyed by connection name, shared across vaults. Old `vault#connection` keys migrate when their archive is unlocked. Rename or remove a group from its connection-list header. Renaming preserves memberships; removing a group keeps its connections and secrets. Group names obey the same rules as other local names; at most 64 groups, and at most 16 groups per connection.
 
 ### Activity and backups
 
@@ -171,7 +177,7 @@ The owner page writes and reads `~/.config/blinddrop/vault.enc.events.jsonl` for
 
 **Back Up Setup** creates a new folder containing every registered encrypted archive, `vaults.json`, `connections.json`, `groups.json` and `settings.json`. Archives retain their own passphrases. The other files are plaintext metadata and references, protected by owner-only file permissions; they contain no stored credential values. The live session file and Activity log are excluded. A missing or unreadable registered archive fails the whole backup, without publishing a partial folder.
 
-**Restore Setup** is available on Welcome before creating or opening a vault. It validates the folder, copies archives into the empty configuration directory, rebases their registered paths and starts locked. It refuses existing data rather than overwriting or merging it. Unlock each required vault with its existing passphrase to use its connections. Encrypted-envelope shape can be checked while locked; authentication and payload integrity are checked on unlock.
+**Restore Setup** is available on Welcome before creating or opening a vault. It validates the folder, copies archives into fresh app configuration, rebases their registered paths and starts locked. A fresh installation containing only preferences is allowed; the backup replaces those preferences. Existing archives, registrations, connections, groups or unknown files prevent restore. It refuses existing data rather than overwriting or merging it. Unlock each required vault with its existing passphrase to use its connections. If a registered vault file is missing, choose Locate file and select its original file or an encrypted backup. Its name and connection references are preserved, and the located file requires an explicit unlock. Encrypted-envelope shape can be checked while locked; authentication and payload integrity are checked on unlock.
 
 ### Browser and app
 
@@ -231,7 +237,7 @@ blinddrop passwd
 
 `passwd` unlocks with the old passphrase, prompts for and confirms the new one, then atomically re-encrypts the archive. A trusted launcher can supply `--password-fd 3 passwd --new-password-fd 4`. Existing helpers must be stopped first; backups retain their original passphrase.
 
-Copy an encrypted archive to back up its secrets, and unlock a restored copy with the same passphrase. For complete app recovery, use **Back Up Setup** and **Restore Setup** as described above; the folder retains connection definitions, registry, groups and settings and restore rebases vault paths. For a standalone CLI archive, copy its `<vault-path>.connections.json` sidecar to the matching path beside the restored archive. **Export Encrypted Vault** copies only the selected encrypted archive, not the separate configuration. There is no passphrase-recovery bypass. Use events are appended to `<vault-path>.events.jsonl`, containing timestamp, grant identifier, known connection name, outcome, and error code. Request bodies, query values, and credentials are excluded. It is a local diagnostic log, not an audit ledger or automatically rotated archive. A log append failure produces a static warning while preserving the request's actual result.
+Copy an encrypted archive to back up its secrets, and unlock a restored copy with the same passphrase. For complete app recovery, use **Back Up Setup** and **Restore Setup** as described above; the folder retains connection definitions, registry, groups and settings and restore rebases vault paths. For a standalone CLI archive, copy its `<vault-path>.connections.json` sidecar to the matching path beside the restored archive. **Export Encrypted Vault** copies only the selected encrypted archive, not the separate configuration. There is no passphrase-recovery bypass. Use events are appended to `<vault-path>.events.jsonl`, containing timestamp, grant identifier, known connection name, broker outcome, error code, and HTTP status for completed exchanges. Broker completion does not imply provider success: the UI shows HTTP 401 or HTTP 500 as an error result. Historical entries without HTTP status are shown as Completed. Request bodies, query values, and credentials are excluded. It is a local diagnostic log, not an audit ledger or automatically rotated archive. A log append failure produces a static warning while preserving the request's actual result.
 
 ## Limits
 

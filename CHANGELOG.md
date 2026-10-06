@@ -1,14 +1,28 @@
 # Changelog
 
-## [0.6.0] - unreleased
+## [0.6.0] - 2026-10-06
 
+- App and CLI HTTP sessions choose a random port once, save it in existing settings, and advance if occupied. Settings or CLI `--port` can change the preference; managed integrations follow the actual endpoint even with the window closed. Manual plugins use the reported URL instead of assuming 8787.
+- Native Quit exits after owner/session cleanup instead of re-entering the cancelled quit flow and leaving a closed process running.
+- `.env` import uses Node's built-in parser for inline comments, quoted hashes and multiline values while retaining destination review and collision checks. Cancelled or superseded parsing cannot restore a discarded draft.
+- Native workspace commands reflect the actual vault lock state. Settings → Security adds an optional system-idle timeout that locks every vault with or without an open window; Off preserves the existing default.
+- Connection creation makes secret reuse explicit and provider templates identify required credentials and endpoint/input details, retaining all 15 choices and Custom last.
+- Settings → General adds a saved Show Dock icon option. On macOS, normal menu-bar clicks open/focus the window directly; right-click retains Open/Quit.
+- Pasted credentials use the connection's default secret name when the name input is blank; unused optional slots remain absent. `.env` imports flag duplicate destination names before writing or moving the source file to Trash.
+- JSON import and the connection editor reject non-origin URL components instead of silently changing the target. Settings Import/Activity and native workspace commands reopen the main window and wait for its initial state.
+- Vault locking dismisses affected editors and clears unsaved credential drafts, including pending file imports and Settings passphrase fields. Delayed UI refreshes cannot restore stale unlocked state after locking.
+- Settings honors requested tabs in its existing window; workspace geometry survives lock/unlock and close/reopen. Saved appearance also controls native chrome. Correct Retina tray artwork and softer Light/Dark surfaces retain the existing layout.
+- Missing named vaults can be located under the same name without breaking connection references. A fresh installation can restore after changing preferences; existing setup data is never silently replaced or merged.
+- Activity and Recent use show recorded HTTP status, so provider rejection is not presented as success. Older records remain readable as Completed.
+- Group rename and confirmed removal preserve connections/secrets; initial connection and agent setup actions and integration progress are explicit.
 - Standalone Mac workflow with a bundled runtime, shared Create/Add/Open forms and app-first setup instructions.
 - Lock All is enforced by the owner runtime even with Settings focused or no window. Closing the window preserves the current session; Quit ends it and relaunch starts locked. Saved sleep/screen locking applies from launch.
 - One bundled monochrome menu-bar icon with Open and Quit.
 - Agent Integrations controls for Claude Code and local Codex: native plugin installation, update/removal, managed endpoint refresh and bundled helper execution. Status distinguishes configuration from authenticated use.
 - Complete Back Up Setup and fresh-state Restore Setup, preserving independent encrypted archives and reference-only metadata. The one-archive operation is named Export Encrypted Vault.
 - Named first vaults keep their chosen name without a missing default registration. Stripe template input, field metadata edits and empty-group persistence are corrected.
-- Runtime, app, plugin and skill versions aligned; canonical download link and standard Forge signing/notarization configuration. Artifact verification remains separate from source changes.
+- Saved connection fields retain their human labels; request illustrations are explicitly examples. Integration actions precede guidance, status refreshes when returning, and approval guidance appears only after configuration.
+- Runtime, app, plugin and skill versions aligned. App replacement preserves stored data; there is no automatic updater.
 
 ## [0.5.1] - 2026-09-20
 
