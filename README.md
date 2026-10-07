@@ -1,4 +1,8 @@
-# BlindDrop
+<p align="center">
+  <img src="desktop/assets/app.png" width="112" alt="BlindDrop icon" />
+</p>
+
+<h1 align="center">BlindDrop</h1>
 
 > *“If you want to keep a secret, you must also hide it from yourself.”*
 >
@@ -14,6 +18,28 @@ returns the result.
 
 Providers receive their usual authentication. They do not need to change
 anything to work with BlindDrop.
+
+<p align="center">
+  <a href="https://github.com/IluvatarLabs/blinddrop/releases/latest">Download</a> ·
+  <a href="#install">Get started</a> ·
+  <a href="https://github.com/IluvatarLabs/blinddrop/issues">Bugs & ideas</a>
+</p>
+
+<p align="center">
+  <a href="assets/screenshots/connections.png"><img src="assets/screenshots/connections.png" width="960" alt="BlindDrop connections workspace with demo services organized into groups and separate vaults" /></a>
+</p>
+
+<p align="center"><strong>Encrypted secret library</strong></p>
+<p align="center">
+  <a href="assets/screenshots/secrets.png"><img src="assets/screenshots/secrets.png" width="960" alt="Encrypted secret library with hidden values in Personal and Work demo vaults" /></a>
+</p>
+
+<p align="center"><strong>Service templates</strong></p>
+<p align="center">
+  <a href="assets/screenshots/templates.png"><img src="assets/screenshots/templates.png" width="960" alt="BlindDrop's service template chooser" /></a>
+</p>
+
+<p align="center"><sub>BlindDrop 0.6.0 with demo data. No real credentials or connected accounts.</sub></p>
 
 ## Why
 
