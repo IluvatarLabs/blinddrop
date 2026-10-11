@@ -16,7 +16,7 @@ import { execFile } from "node:child_process";
 
 const execFileAsync = promisify(execFile);
 
-const BUNDLED_VERSION = "0.6.0";
+const BUNDLED_VERSION = "0.6.1";
 const MARKETPLACE = "blinddrop-desktop";
 const PLUGIN = "blinddrop";
 const SELECTOR = `${PLUGIN}@${MARKETPLACE}`;

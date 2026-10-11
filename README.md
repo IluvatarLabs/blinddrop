@@ -58,7 +58,7 @@ subscription or hosted account to maintain.
 
 ## Install
 
-Download the Mac app from the [BlindDrop 0.6.0 release](https://github.com/IluvatarLabs/blinddrop/releases/tag/v0.6.0), move **BlindDrop.app** into Applications, and open it. The download is for Apple silicon Macs and is unsigned and not notarized. The app includes its runtime: no Node installation, global CLI, PATH changes or terminal are needed.
+Download the Mac app from the [BlindDrop 0.6.1 release](https://github.com/IluvatarLabs/blinddrop/releases/tag/v0.6.1), move **BlindDrop.app** into Applications, and open it. The download is for Apple silicon Macs and is unsigned and not notarized. The app includes its runtime: no Node installation, global CLI, PATH changes or terminal are needed.
 
 If macOS blocks the first launch, follow [Apple's instructions for opening an app from an unidentified developer](https://support.apple.com/en-us/102445).
 
@@ -67,18 +67,20 @@ If macOS blocks the first launch, follow [Apple's instructions for opening an ap
 3. Open **Settings → Sessions** and install the integration for Claude Code or local Codex. Follow the host trust/reload instruction shown there.
 4. Unlock the vaults the connection needs, then ask the agent to use that connection.
 
+With several vaults, Unlock remembers your last successful choice. Opening one vault gives you the workspace; others stay locked. **Unlock multiple…** prompts once for each vault's own passphrase, and you can Skip or Stop without undoing completed unlocks. A connection can select just the vaults it needs. After access changes, a running agent may need Claude Code's `/reload-plugins` or a new Codex session.
+
 Connections hold service origins and authentication settings; Secrets hold the encrypted credentials they reference. A template identifies the credentials it needs. When editing a connection, you can choose an existing stored secret without re-entering its value. **Import .env** uses Node's standard dotenv parsing and lets you review names and selected rows before anything is saved.
 
-Closing the window keeps the current session running. A normal Dock or menu-bar click reopens it; right-clicking the menu-bar icon offers Open and Quit. **Settings → General → Show Dock icon** can hide the Dock icon while leaving menu-bar access available. **Settings → Security** can optionally lock all vaults after system inactivity. **Lock All** revokes access, including with no window open; **Quit** stops the app. Every launch starts locked.
+Closing the window keeps the current session running. A normal Dock or menu-bar click reopens it; right-clicking the menu-bar icon offers Open and Quit. **Settings → General → Show Dock icon** can hide the Dock icon while leaving menu-bar access available. **Settings → Security** sets automatic-lock defaults; **Settings → Vaults** can override them for one vault. **Lock All** revokes access, including with no window open; **Quit** stops the app. Every launch starts locked.
 
 To upgrade, quit BlindDrop, replace the app in Applications, then reopen it. Vaults and configuration stay outside the app bundle. There is no automatic updater; use the [release page](https://github.com/IluvatarLabs/blinddrop/releases). If you move the app, use **Update** beside each installed integration to refresh its bundled-helper path.
 
 ### Optional command-line package
 
-The CLI requires Node.js 22.13+ on the 22.x line or 23.5+, and npm. Download `blinddrop-0.6.0.tgz` from the release and install that file by its local path:
+The CLI requires Node.js 22.13+ on the 22.x line or 23.5+, and npm. Download `blinddrop-0.6.1.tgz` from the release and install that file by its local path:
 
 ```sh
-npm install --global --prefix "$HOME/.local" ./blinddrop-0.6.0.tgz
+npm install --global --prefix "$HOME/.local" ./blinddrop-0.6.1.tgz
 export PATH="$HOME/.local/bin:$PATH"
 blinddrop --help
 ```

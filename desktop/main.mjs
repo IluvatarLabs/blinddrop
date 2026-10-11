@@ -98,11 +98,12 @@ let configDir = "";
 let integrations = null;
 let appliedSessionPort = null;
 let integrationOperations = Promise.resolve();
-/** Power events currently bound to app-global Lock All, by event name. */
+/** Power events currently bound to effective vault policies, by event name. */
 const powerListeners = new Map();
 /** @type {ReturnType<typeof setInterval> | null} */
 let idleLockTimer = null;
-let appliedIdleLockMinutes = 0;
+let idleLockEnabled = false;
+let idleLockCheckPending = false;
 
 /**
  * Deny every new window and every navigation that leaves `allowedOrigin`.
@@ -366,9 +367,9 @@ async function sendMainCommand(name) {
 }
 
 /** Refresh every owner view from the runtime's authoritative state. */
-function refreshWindows() {
+function refreshWindows(detail) {
   for (const window of BrowserWindow.getAllWindows()) {
-    if (!window.isDestroyed()) window.webContents.send("command", "refresh-state");
+    if (!window.isDestroyed()) window.webContents.send("command", "refresh-state", detail);
   }
 }
 
@@ -392,15 +393,34 @@ function refreshLockRequiredMenuItems() {
 
 /**
  * Lock every vault through the owner runtime, independent of window/focus.
- * Session synchronization completes before any open view is told to reload.
+ * Cancel older unlock input immediately; reload after session synchronization.
  */
 async function lockAll() {
   const session = ui;
   if (session === null) return;
   try {
-    await session.lockAll();
+    const completion = session.lockAll();
+    refreshWindows({ lock: "all", intent: true });
+    await completion;
     refreshLockRequiredMenuItems();
     refreshWindows();
+  } catch {
+    console.error(LOCK_FAILED_LOG);
+  }
+}
+
+/** Apply one automatic-lock event through the owner runtime's saved policies. */
+async function lockForEvent(reason, idleSeconds = 0) {
+  const session = ui;
+  if (session === null) return;
+  try {
+    const completion = session.lockForEvent(reason, idleSeconds);
+    refreshWindows({ lock: reason, intent: true, ...(reason === "idle" ? { idleSeconds } : {}) });
+    const changed = await completion;
+    if (changed) {
+      refreshLockRequiredMenuItems();
+      refreshWindows();
+    }
   } catch {
     console.error(LOCK_FAILED_LOG);
   }
@@ -558,18 +578,19 @@ function createTray() {
 }
 
 /**
- * Turn one power event into app-global Lock All, or stop forwarding it. Registering
+ * Forward one power event to the saved effective vault policies, or stop forwarding it. Registering
  * the same event twice is a no-op, so the page may call `applySettings` after
  * every settings write.
  *
  * @param {"suspend" | "lock-screen"} event
+ * @param {"sleep" | "screen-lock"} reason
  * @param {boolean} on
  */
-function forwardPowerEvent(event, on) {
+function forwardPowerEvent(event, reason, on) {
   const registered = powerListeners.get(event);
   if (on && registered === undefined) {
     const listener = () => {
-      void lockAll();
+      void lockForEvent(reason);
     };
     powerMonitor.on(event, listener);
     powerListeners.set(event, listener);
@@ -583,26 +604,21 @@ function forwardPowerEvent(event, on) {
  * Apply the saved idle-lock threshold to Electron's system-wide idle clock.
  * The timer lives in the main process, so closing every window does not stop it.
  *
- * @param {unknown} minutes
+ * @param {boolean} on
  */
-function applyIdleLock(minutes) {
-  const next = IDLE_LOCK_MINUTES.has(minutes) ? minutes : 0;
-  if (next === appliedIdleLockMinutes) return;
+function applyIdleLock(on) {
+  if (on === idleLockEnabled) return;
   if (idleLockTimer !== null) {
     clearInterval(idleLockTimer);
     idleLockTimer = null;
   }
-  appliedIdleLockMinutes = next;
-  if (next === 0) return;
+  idleLockEnabled = on;
+  if (!on) return;
   idleLockTimer = setInterval(() => {
-    const thresholdSeconds = appliedIdleLockMinutes * 60;
-    if (
-      thresholdSeconds > 0 &&
-      hasUnlockedVaults() &&
-      powerMonitor.getSystemIdleTime() >= thresholdSeconds
-    ) {
-      void lockAll();
-    }
+    if (!hasUnlockedVaults() || idleLockCheckPending) return;
+    idleLockCheckPending = true;
+    void lockForEvent("idle", powerMonitor.getSystemIdleTime())
+      .finally(() => { idleLockCheckPending = false; });
   }, 1000);
 }
 
@@ -626,9 +642,26 @@ async function applySettings(settings) {
     if (showDockIcon) await app.dock.show();
     else app.dock.hide();
   }
-  forwardPowerEvent("suspend", value.lockOnSleep === true);
-  forwardPowerEvent("lock-screen", value.lockOnScreenLock === true);
-  applyIdleLock(value.idleLockMinutes);
+  const policies = typeof value.vaultLockPolicies === "object" &&
+      value.vaultLockPolicies !== null && !Array.isArray(value.vaultLockPolicies)
+    ? Object.values(value.vaultLockPolicies)
+    : [];
+  const policyUses = (key, predicate) => policies.some(policy =>
+    typeof policy === "object" && policy !== null && predicate(policy[key]));
+  forwardPowerEvent(
+    "suspend",
+    "sleep",
+    value.lockOnSleep === true || policyUses("lockOnSleep", entry => entry === true),
+  );
+  forwardPowerEvent(
+    "lock-screen",
+    "screen-lock",
+    value.lockOnScreenLock === true || policyUses("lockOnScreenLock", entry => entry === true),
+  );
+  applyIdleLock(
+    (value.idleLockMinutes > 0 && IDLE_LOCK_MINUTES.has(value.idleLockMinutes)) ||
+      policyUses("idleLockMinutes", entry => entry > 0 && IDLE_LOCK_MINUTES.has(entry)),
+  );
   refreshLockRequiredMenuItems();
 }
 
@@ -763,7 +796,7 @@ function failStartup() {
  */
 function shutdown() {
   if (shutdownPromise === null) {
-    applyIdleLock(0);
+    applyIdleLock(false);
     const session = ui;
     ui = null;
     shutdownPromise = (session === null ? Promise.resolve() : session.close()).catch(() => {
@@ -839,7 +872,11 @@ app.whenReady().then(async () => {
   }
 
   try {
-    ui = await startOwnerUi({ vaultPath, onSessionPortChanged: queueIntegrationEndpoint });
+    ui = await startOwnerUi({
+      vaultPath,
+      startupVaultPath: requestedVaultPath ?? undefined,
+      onSessionPortChanged: queueIntegrationEndpoint,
+    });
   } catch {
     failStartup();
     return;

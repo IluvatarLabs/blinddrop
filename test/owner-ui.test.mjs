@@ -1,11 +1,12 @@
-// v0.5.1 owner UI functional tests. Every test drives the real installed `ui`
+// v0.5.1 owner UI functional tests. Tests drive the real installed `ui`
 // command as a child process with HOME pointed at a scratch directory (so the
 // owner's own ~/.config/blinddrop is never touched), talks to it over its real
 // loopback listener with exact control of Host/Origin/Authorization, drives the
 // implicit agent session with the official MCP client, and authenticates real
 // signed/keyed requests against a disposable HTTPS receiver with generated
-// credentials. No mocks and no synthetic assertions: each proves a reachable
-// product behavior and fails on a real regression.
+// credentials. The automatic-lock continuation calls the same exported owner
+// runtime used by Electron. No mocks and no synthetic assertions: each proves
+// a reachable product behavior and fails on a real regression.
 
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
@@ -22,6 +23,7 @@ import test from 'node:test';
 
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 
+import { startOwnerUi as startOwnerRuntime } from '../dist/ui.js';
 import { ca, cli, collect, owner, spawnOwner } from './support/owner-session.mjs';
 
 const keyPath = new URL('./fixtures/localhost-key.pem', import.meta.url);
@@ -685,15 +687,80 @@ test('two vaults: a cross-vault connection is usable only when both are unlocked
   assert.equal(denied.structuredContent.error.code, 'ACCESS_DENIED', 'the cross-vault connection is no longer granted');
   await survivor.close();
 
+  // Persist one explicit exception: `default` stays unlocked on sleep while
+  // vaultb inherits the existing app default and locks. Restart into the same
+  // exported owner runtime Electron calls so the saved policy drives a real
+  // credential-bearing session transition.
+  await post('/api/vault/unlock', { name: 'vaultb', passphrase: passB });
+  const vaultLockPolicies = {
+    default: { lockOnSleep: false, lockOnScreenLock: false, idleLockMinutes: 0 },
+  };
+  const savedSettings = await post('/api/settings', { vaultLockPolicies });
+  assert.deepEqual(savedSettings.vaultLockPolicies, vaultLockPolicies);
+  assert.deepEqual(JSON.parse(readFileSync(join(configDir, 'settings.json'), 'utf8')).vaultLockPolicies, vaultLockPolicies);
+
   const shutdown = await api(port, 'POST', '/api/shutdown', { token: ownerToken, body: {} });
   assert.deepEqual(shutdown.json, { ok: true });
   assert.deepEqual(await ui.exit, { code: 0, signal: null });
+
+  const previousHome = process.env.HOME;
+  process.env.HOME = home;
+  let runtime;
+  try {
+    runtime = await startOwnerRuntime({ configDir, sessionPort, startupVaultPath: vaultBPath });
+  } finally {
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+  }
+  t.after(() => runtime.close());
+  const runtimePort = Number(new URL(runtime.url).port);
+  const runtimePost = async (path, body) => {
+    const response = await api(runtimePort, 'POST', path, { token: runtime.token, body });
+    assert.equal(response.status, 200, `${path}: ${response.text}`);
+    return response.json;
+  };
+  assert.equal((await api(runtimePort, 'GET', '/api/state', { token: runtime.token })).json.startupVault, 'vaultb');
+  await runtimePost('/api/vault/unlock', { name: 'default', passphrase: passA });
+  await runtimePost('/api/vault/unlock', { name: 'vaultb', passphrase: passB });
+  assert.equal(await runtime.lockForEvent('sleep'), true);
+
+  const afterPolicy = (await api(runtimePort, 'GET', '/api/state', { token: runtime.token })).json;
+  assert.deepEqual(afterPolicy.vaults.map(v => [v.name, v.unlocked]), [['default', true], ['vaultb', false]]);
+  assert.deepEqual(Object.keys(afterPolicy.session.connections), ['onlya']);
+  const policySession = readSession();
+  sessionTokens.push(policySession.token);
+  const policyAgent = await attach(policySession.mcpUrl, policySession.token);
+  assert.equal((await execute(policyAgent, { connection: 'onlya', path: '/onlya' })).structuredContent.status, 200);
+  assert.deepEqual((await policyAgent.callTool({ name: 'list_connections', arguments: {} }))
+    .structuredContent.connections.map(connection => connection.name), ['onlya']);
+
+  const allLocked = await runtimePost('/api/vault/lock-all', {});
+  assert.equal(allLocked.vaults.every(vault => !vault.unlocked), true);
+  assert.equal(allLocked.session, null);
+  assert.equal(existsSync(sessionFilePath), false);
+  await assert.rejects(() => statusOf(policySession.mcpUrl, policySession.token));
+  await policyAgent.close().catch(() => undefined);
+
+  await runtimePost('/api/settings', { vaultLockPolicies: {
+    ...vaultLockPolicies,
+    vaultb: { lockOnSleep: false, lockOnScreenLock: false, idleLockMinutes: 0 },
+  } });
+  await runtimePost('/api/vault/remove', { name: 'vaultb' });
+  await runtimePost('/api/vault/open', { name: 'vaultb', path: vaultBPath });
+  await runtimePost('/api/vault/unlock', { name: 'vaultb', passphrase: passB });
+  const automaticLock = runtime.lockForEvent('sleep');
+  assert.equal(runtime.hasUnlockedVaults(), false, 'native lock state changes at the event before session recomputation');
+  assert.equal(await automaticLock, true);
+  assert.equal((await api(runtimePort, 'GET', '/api/state', { token: runtime.token })).json
+    .vaults.find(vault => vault.name === 'vaultb').unlocked, false,
+  'a recreated vault name inherits the app sleep default instead of its removed override');
+  await runtime.close();
 
   const transcript = `${ui.stdout()}${await ui.stderr}${responses.join('')}`;
   for (const material of [passA, passB, valueA, valueB, ...sessionTokens]) {
     assert.equal(transcript.includes(material), false);
   }
-  t.diagnostic('A cross-vault connection served only while both vaults were unlocked; locking the second dropped exactly it, rotated the session token/file, and left the first-vault-only connection working.');
+  t.diagnostic('Cross-vault access required both vaults; the saved sleep exception kept the default-vault credential working while the inheriting vault locked, and authoritative Lock All revoked the remainder.');
 });
 
 test('a held saved port advances to a working session and persists the actual port', { timeout: 60_000 }, async t => {

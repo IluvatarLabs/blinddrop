@@ -327,8 +327,13 @@ body.desktop { background: var(--bg); height: 100vh; min-height: 100vh; display:
 .unlock-form .input-wrap .input-actions { top: 6px; }
 .unlock-opts { display: flex; justify-content: space-between; align-items: center; font-size: 12px; color: var(--muted); }
 .unlock-alt { display: flex; gap: 8px; justify-content: center; margin-top: 4px; }
-.unlock-vaults { width: 100%; margin-top: 18px; border-top: 1px solid var(--border); padding-top: 12px; text-align: left; }
+.unlock-vaults { width: 100%; margin-top: 14px; text-align: left; }
 .unlock-vaults .lbl { font-size: 11px; font-weight: 600; color: var(--muted); margin-bottom: 4px; }
+.unlock-vaults .select { width: 100%; }
+.unlock-selected { display: flex; align-items: center; gap: 8px; min-height: 28px; margin-top: 6px; color: var(--muted); font-size: 11px; }
+.unlock-selected .mono { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.unlock-selected .btn { margin-left: auto; flex: none; }
+.unlock-actions { width: 100%; display: flex; flex-direction: column; gap: 8px; margin-top: 6px; padding-top: 12px; border-top: 1px solid var(--border); }
 .vault-row { display: grid; grid-template-columns: 24px 1fr auto; gap: 10px; align-items: center; padding: 6px 8px; border-radius: 6px; width: 100%; text-align: left; font-size: 13px; }
 .vault-row:hover { background: var(--fg-soft-2); }
 .vault-row .sub { font-size: 11px; color: var(--muted); font-family: var(--font-mono); }
@@ -718,7 +723,13 @@ body.app .titlebar.plain { height: 52px; }
 .binding-reference .binding-status { flex: 1; min-width: 180px; margin-top: 0; }
 .unlock-card .path, .vault-row .sub { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .vault-row > span { min-width: 0; }
-#unlock-list { max-height: 112px; overflow: auto; }
+.unlock-choice-list { border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+.unlock-choice-list .vault-row { border-radius: 0; }
+.unlock-choice-list .vault-row + .vault-row { border-top: 1px solid var(--border); }
+.unlock-choice-list label.vault-row { cursor: pointer; }
+.unlock-choice-list input { margin: 0; }
+.unlock-progress { min-height: 18px; color: var(--muted); font-size: 12px; }
+.vault-policy { padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-lg); }
 body.app .welcome { min-height: 0; flex: 1; overflow: hidden; }
 body.app .welcome-main { overflow: auto; min-height: 0; }
 body.app .mac-window.unlock { overflow: auto; }
@@ -740,6 +751,7 @@ body.app .mac-window.unlock { overflow: auto; }
       <div class="vault-icon"><i data-icon="key"></i></div>
       <h1 id="unlock-title">Vault locked</h1>
       <div class="path" id="unlock-path"></div>
+      <div class="unlock-vaults" id="unlock-vaults"><label class="lbl" for="unlock-select">Vault</label><select class="select" id="unlock-select" aria-label="Vault to unlock"></select><div class="unlock-selected" id="unlock-selected"></div></div>
       <form class="unlock-form" id="unlock" novalidate>
         <div class="input-wrap"><input class="input" type="password" id="pass" placeholder="Passphrase" autocomplete="current-password" aria-label="Passphrase"><div class="input-actions"><button type="button" class="icon-btn" data-reveal="#pass" aria-label="Show while typing"><i data-icon="eye"></i></button></div></div>
         <div class="capslock" hidden><i data-icon="warn"></i>Caps Lock is on</div>
@@ -747,7 +759,7 @@ body.app .mac-window.unlock { overflow: auto; }
         <button type="submit" class="btn btn-primary btn-lg" id="unlock-btn">Unlock</button>
         <div class="unlock-opts"><button type="button" class="link-btn" data-open="#forgot" style="font-size:12px">Forgot the passphrase?</button></div>
       </form>
-      <div class="unlock-vaults"><div class="lbl">Vaults</div><div id="unlock-list"></div><div class="unlock-alt"><button type="button" class="link-btn" data-action="add-vault" style="font-size:12px">Create a vault</button><button type="button" class="link-btn" data-action="open-vault" style="font-size:12px">Open a vault file…</button></div></div>
+      <div class="unlock-actions"><button type="button" class="link-btn" id="unlock-multiple" data-action="unlock-multiple" hidden>Unlock multiple…</button><div class="unlock-alt"><button type="button" class="link-btn" data-unlock-navigation data-action="add-vault" style="font-size:12px">Create a vault</button><button type="button" class="link-btn" data-unlock-navigation data-action="open-vault" style="font-size:12px">Open a vault file…</button></div></div>
     </div>
   </div>
 </main>
@@ -843,7 +855,7 @@ body.app .mac-window.unlock { overflow: auto; }
         <div class="pref-row app-only"><span class="lbl">Dock</span><div class="opts"><label class="opt"><button type="button" role="switch" aria-checked="true" aria-label="Show Dock icon" data-setting="showDockIcon"></button><span>Show Dock icon</span></label></div></div>
       </div>
       <div data-panel="security" hidden id="panel-security">
-        <div class="pref-row"><span class="lbl">Lock automatically</span><div class="opts"><label class="opt app-only" for="idle-lock-minutes"><span>After</span><select class="select" id="idle-lock-minutes" aria-label="Lock after inactivity"><option value="0">Off</option><option value="1">1 minute idle</option><option value="5">5 minutes idle</option><option value="15">15 minutes idle</option><option value="30">30 minutes idle</option><option value="60">1 hour idle</option></select></label><label class="opt"><button type="button" role="switch" aria-checked="true" aria-label="Lock on sleep" data-setting="lockOnSleep"></button><span>When the Mac sleeps</span></label><label class="opt"><button type="button" role="switch" aria-checked="false" aria-label="Lock on screen lock" data-setting="lockOnScreenLock"></button><span>When the screen locks</span></label></div></div>
+        <div class="pref-row"><span class="lbl">App defaults</span><div class="opts"><label class="opt app-only" for="idle-lock-minutes"><span>After</span><select class="select" id="idle-lock-minutes" aria-label="Lock after inactivity"><option value="0">Off</option><option value="1">1 minute idle</option><option value="5">5 minutes idle</option><option value="15">15 minutes idle</option><option value="30">30 minutes idle</option><option value="60">1 hour idle</option></select></label><label class="opt"><button type="button" role="switch" aria-checked="true" aria-label="Lock on sleep" data-setting="lockOnSleep"></button><span>When the Mac sleeps</span></label><label class="opt"><button type="button" role="switch" aria-checked="false" aria-label="Lock on screen lock" data-setting="lockOnScreenLock"></button><span>When the screen locks</span></label></div></div>
       </div>
       <div data-panel="sessions" hidden>
         <div class="pref-row"><span class="lbl">Agent access</span><div class="opts"><label class="opt"><button type="button" role="switch" aria-checked="true" aria-label="Session file" data-setting="sessionFile"></button><span>Make unlocked sessions available to installed integrations</span></label></div></div>
@@ -1304,14 +1316,15 @@ document.addEventListener('DOMContentLoaded', () => FK.hydrateIcons());
   FK.hasToken = !!TOKEN;
 
   FK.state = { version: '', configDir: '', vaults: [], session: null, sessionError: null };
-  FK.settings = { appearance: 'system', recentVaults: [], ui: {} };
+  FK.settings = { appearance: 'system', recentVaults: [], vaultLockPolicies: {}, ui: {} };
   FK.vaults = []; FK.unlockedSet = new Set();
   FK.connections = []; FK.secretsByVault = {}; FK.secretList = []; FK.groups = []; FK.events = [];
   FK.ui = {};
 
   let reading = false;
-  FK.api = async function (path, body) {
+  FK.api = async function (path, body, options) {
     const init = { method: body === undefined ? 'GET' : 'POST', cache: 'no-store', headers: { authorization: 'Bearer ' + TOKEN } };
+    if (options && options.signal) init.signal = options.signal;
     if (body !== undefined) { init.headers['content-type'] = 'application/json'; init.body = JSON.stringify(body); }
     let response;
     try { response = await fetch(path, init); } catch (networkError) { throw fail('UNREACHABLE', 'Cannot reach ' + FK.appName + '. The helper may have stopped.'); }
@@ -1329,7 +1342,7 @@ document.addEventListener('DOMContentLoaded', () => FK.hydrateIcons());
   function fail(code, message) { const e = new Error(message); e.code = code; return e; }
 
   const bridge = () => FK.app && window.desktop.applySettings
-    ? window.desktop.applySettings({ appearance: FK.settings.appearance, openAtLogin: !!FK.settings.openAtLogin, showDockIcon: FK.settings.showDockIcon !== false, idleLockMinutes: Number(FK.settings.idleLockMinutes) || 0, lockOnSleep: !!FK.settings.lockOnSleep, lockOnScreenLock: !!FK.settings.lockOnScreenLock })
+    ? window.desktop.applySettings({ appearance: FK.settings.appearance, openAtLogin: !!FK.settings.openAtLogin, showDockIcon: FK.settings.showDockIcon !== false, idleLockMinutes: Number(FK.settings.idleLockMinutes) || 0, lockOnSleep: !!FK.settings.lockOnSleep, lockOnScreenLock: !!FK.settings.lockOnScreenLock, vaultLockPolicies: FK.settings.vaultLockPolicies || {} })
     : Promise.resolve();
 
   let lastSignature = '';
@@ -1382,6 +1395,19 @@ document.addEventListener('DOMContentLoaded', () => FK.hydrateIcons());
   FK.anyUnlocked = () => FK.vaults.some(v => v.unlocked);
   FK.vaultExists = () => FK.vaults.some(v => v.exists);
   FK.defaultVault = () => FK.vaults.find(v => v.name === 'default') || FK.vaults[0] || null;
+  FK.vaultPolicy = function (name) {
+    const policies = FK.settings.vaultLockPolicies || {};
+    return Object.hasOwn(policies, name) ? policies[name] : null;
+  };
+  FK.lockEventAffects = function (name, detail) {
+    if (!detail || !detail.lock) return false;
+    if (detail.lock === 'all') return true;
+    const policy = FK.vaultPolicy(name) || { idleLockMinutes: Number(FK.settings.idleLockMinutes) || 0, lockOnSleep: !!FK.settings.lockOnSleep, lockOnScreenLock: !!FK.settings.lockOnScreenLock };
+    if (detail.lock === 'sleep') return !!policy.lockOnSleep;
+    if (detail.lock === 'screen-lock') return !!policy.lockOnScreenLock;
+    if (detail.lock === 'idle') return Number(policy.idleLockMinutes) > 0 && Number(detail.idleSeconds) >= Number(policy.idleLockMinutes) * 60;
+    return false;
+  };
   FK.refresh = function () { if (FK.mode !== 'main' || document.visibilityState !== 'visible' || document.querySelector('dialog[open]')) return; FK.load({ quiet: true }).catch(function () { }); };
   addEventListener('focus', FK.refresh);
   setInterval(FK.refresh, 15000);
@@ -1448,7 +1474,7 @@ document.addEventListener('DOMContentLoaded', () => FK.hydrateIcons());
     if (!FK.app || !window.desktop.chooseVault) { FK.sheets.openVaultSheet('open'); $('#vs-name').value = name; $('#vs-name').readOnly = true; return; }
     const path = await window.desktop.chooseVault('open');
     if (!path) return;
-    try { await FK.api('/api/vault/open', { name, path }); await FK.load(); if (FK.selectUnlockVault) FK.selectUnlockVault(name); FK.go(); FK.post({ type: 'lock-state' }); FK.toast('Vault located', 'Unlock it with its passphrase.'); }
+    try { await FK.api('/api/vault/open', { name, path }); await FK.load(); if (FK.selectUnlockVault) FK.selectUnlockVault(name); if (FK.unlockFlow) FK.unlockFlow.refresh(); FK.go(); FK.post({ type: 'lock-state' }); FK.toast('Vault located', 'Unlock it with its passphrase.'); }
     catch (error) { FK.toast(error.message); }
   };
   document.addEventListener('click', e => { const button = e.target.closest('[data-locate-vault]'); if (button) void FK.locateVault(button.dataset.locateVault); });
@@ -1488,7 +1514,8 @@ document.addEventListener('DOMContentLoaded', () => FK.hydrateIcons());
     + '<dialog id="json-sheet" class="sheet wide" data-static><div class="sheet-head"><h2>Import a connection definition</h2><span class="grow"></span><select class="select" id="js-vault" style="width:auto" aria-label="Vault"></select></div><div class="sheet-body"><div class="f"><label for="js-name">Name</label><input class="input mono" id="js-name" spellcheck="false" style="max-width:280px"><span class="err" id="js-name-err" hidden></span></div><div class="f"><label for="js-text">Definition</label><textarea class="input-area" id="js-text" style="min-height:220px" spellcheck="false" placeholder=\'{ "origin": "https://api.example.com", "auth": { "type": "bearer", "secret": "my-secret#token" } }\'></textarea><span class="err" id="js-err" hidden></span></div></div><div class="sheet-foot"><button type="button" class="btn" data-close>Cancel</button><button type="button" class="btn btn-primary" data-action="js-save">Import</button></div></dialog>'
     + '<dialog id="group-sheet" data-static><div class="dialog-body stackv"><div class="dialog-title" id="gs-title">Add to group</div><div id="gs-list" class="stackv"></div><div class="f"><label for="gs-new">New group</label><input class="input mono" id="gs-new" placeholder="project-name" spellcheck="false"></div></div><div class="dialog-actions"><button type="button" class="btn" data-close>Cancel</button><button type="button" class="btn btn-primary" data-action="gs-save">Done</button></div></dialog>'
     + '<dialog id="vault-sheet" data-static><div class="dialog-body stackv"><div class="dialog-title" id="vs-title">Add a vault</div><div class="seg" id="vs-mode" data-segmented role="group" aria-label="Mode"><button type="button" data-value="create" class="active">Create</button><button type="button" data-value="open">Open existing</button></div><div class="f"><label for="vs-name">Name</label><input class="input mono" id="vs-name" spellcheck="false" autocomplete="off"><span class="err" id="vs-name-err" hidden></span></div><div class="f"><label for="vs-path">Location</label><div style="display:flex;gap:8px"><input class="input mono" id="vs-path" spellcheck="false" autocomplete="off"><button type="button" class="btn" id="vs-choose" data-action="vs-choose">Choose…</button></div><span class="err" id="vs-path-err" hidden></span></div><div class="f" id="vs-pp-row"><label for="vs-pp">Passphrase</label><div class="input-wrap"><input class="input" type="password" id="vs-pp" autocomplete="new-password" spellcheck="false"><div class="input-actions"><button type="button" class="icon-btn" data-reveal="#vs-pp" aria-label="Show while typing"><i data-icon="eye"></i></button></div></div><div class="strength-line"><div class="meter" data-strength="#vs-pp"><i></i></div><span class="meter-label"></span></div><label for="vs-pp2">Confirm</label><input class="input" type="password" id="vs-pp2" autocomplete="new-password"><span class="err form-error" id="vs-pp-err" hidden></span></div></div><div class="dialog-actions"><button type="button" class="btn" data-close>Cancel</button><button type="button" class="btn btn-primary" data-action="vs-save" id="vs-save">Create vault</button></div></dialog>'
-    + '<dialog id="unlock-vault" data-static><div class="dialog-body stackv"><div class="dialog-title" id="uv-title">Unlock vault</div><div class="input-wrap"><input class="input" type="password" id="uv-pass" placeholder="Passphrase" autofocus autocomplete="current-password"><div class="input-actions"><button type="button" class="icon-btn" data-reveal="#uv-pass" aria-label="Show while typing"><i data-icon="eye"></i></button></div></div><span class="err form-error" id="uv-err" hidden></span></div><div class="dialog-actions"><button type="button" class="btn" data-close>Cancel</button><button type="button" class="btn btn-primary" data-action="uv-unlock" id="uv-btn">Unlock</button></div></dialog>'
+    + '<dialog id="unlock-many"><form id="unlock-many-form"><div class="dialog-body stackv"><div class="dialog-title" id="um-title">Unlock multiple vaults</div><div class="dialog-text" id="um-text">Choose the vaults to unlock.</div><label class="check"><input type="checkbox" id="um-all"> Select all</label><div class="unlock-choice-list" id="um-list"></div><span class="err form-error" id="um-err" hidden></span></div><div class="dialog-actions"><button type="button" class="btn" data-close>Cancel</button><button type="submit" class="btn btn-primary" id="um-start">Continue</button></div></form></dialog>'
+    + '<dialog id="unlock-vault"><form id="unlock-vault-form"><div class="dialog-body stackv"><div class="dialog-title" id="uv-title">Unlock vault</div><div class="unlock-progress" id="uv-progress"></div><div class="input-wrap"><input class="input" type="password" id="uv-pass" placeholder="Passphrase" autofocus autocomplete="current-password"><div class="input-actions"><button type="button" class="icon-btn" data-reveal="#uv-pass" aria-label="Show while typing"><i data-icon="eye"></i></button></div></div><span class="err form-error" id="uv-err" hidden></span></div><div class="dialog-actions"><button type="button" class="btn left" id="uv-stop" data-action="uv-stop">Stop</button><button type="button" class="btn" id="uv-cancel" data-close>Cancel</button><button type="button" class="btn" id="uv-skip" data-action="uv-skip">Skip</button><button type="submit" class="btn btn-primary" id="uv-btn">Unlock</button></div></form></dialog>'
     + '<dialog id="confirm"><div class="dialog-body"><div class="dialog-title" id="cf-title"></div><div class="dialog-text" id="cf-text"></div></div><div class="dialog-actions"><button type="button" class="btn" data-close>Cancel</button><button type="button" class="btn btn-danger" data-action="cf-ok" id="cf-ok"></button></div></dialog>');
   FK.hydrateIcons(document.body);
   const err = (id, msg) => { const e = $(id); e.textContent = msg || ''; e.hidden = !msg; return !!msg; };
@@ -1984,14 +2011,174 @@ document.addEventListener('DOMContentLoaded', () => FK.hydrateIcons());
     FK.toast(mode === 'create' ? 'Vault ' + result.name + ' created' : 'Vault ' + result.name + ' added');
   }
 
-  /* ── unlock a vault ── */
-  let uvName = null;
-  function openUnlock(name) { uvName = name; $('#uv-title').textContent = 'Unlock ' + name; $('#uv-pass').value = ''; err('#uv-err', ''); FK.openDialog('#unlock-vault'); $('#uv-pass').focus(); }
-  function doUnlock() {
-    const pass = $('#uv-pass').value; if (!pass) { err('#uv-err', 'Enter the passphrase.'); return; }
-    $('#uv-btn').disabled = true; $('#uv-btn').textContent = 'Deriving key…';
-    FK.api('/api/vault/unlock', { name: uvName, passphrase: pass }).then(async () => { $('#uv-pass').value = ''; $('#uv-btn').disabled = false; $('#uv-btn').textContent = 'Unlock'; $('#unlock-vault').close(); await FK.load(); FK.toast('Vault ' + uvName + ' unlocked'); }).catch(e => { $('#uv-btn').disabled = false; $('#uv-btn').textContent = 'Unlock'; err('#uv-err', e.code === 'UNLOCK_FAILED' ? 'That passphrase does not open this vault.' : e.message); });
+  /* ── unlock one or several vaults through one named prompt ── */
+  const uvDialog = $('#unlock-vault'), uvForm = $('#unlock-vault-form'), uvPass = $('#uv-pass');
+  const manyDialog = $('#unlock-many'), manyForm = $('#unlock-many-form');
+  let uvName = null, uvBusy = false, uvOperation = 0, uvAbort = null, queue = null, manyRequest = null;
+  const vaultNamed = name => FK.vaults.find(v => v.name === name);
+  const lockedExisting = () => FK.vaults.filter(v => v.exists && !v.unlocked);
+  const uniqueNames = names => [...new Set((names || []).filter(name => typeof name === 'string'))];
+  function resetUnlockInput() { FK.clearDraftFields(uvDialog); err('#uv-err', ''); }
+  function setUnlockBusy(busy) {
+    uvBusy = busy;
+    if (busy || queue) uvDialog.setAttribute('data-static', ''); else uvDialog.removeAttribute('data-static');
+    uvPass.disabled = busy;
+    $('#uv-btn').disabled = busy;
+    $('#uv-btn').textContent = busy ? 'Deriving key…' : 'Unlock';
+    ['#uv-cancel', '#uv-stop', '#uv-skip'].forEach(id => { $(id).disabled = busy; });
   }
+  function renderUnlockPrompt() {
+    const multi = !!queue;
+    $('#uv-title').textContent = 'Unlock ' + uvName;
+    $('#uv-progress').textContent = multi ? (queue.index + 1) + ' of ' + queue.promptable.length : '';
+    $('#uv-cancel').hidden = multi;
+    $('#uv-stop').hidden = !multi;
+    $('#uv-skip').hidden = !multi;
+    resetUnlockInput(); setUnlockBusy(false);
+  }
+  function returnToConnection(name) {
+    if (name && FK.returnToConnection) FK.returnToConnection(name);
+  }
+  function finishQueue(stopped) {
+    if (!queue) return;
+    const done = queue;
+    queue = null; uvName = null; uvOperation++;
+    resetUnlockInput(); setUnlockBusy(false);
+    if (uvDialog.open) uvDialog.close();
+    returnToConnection(done.connection);
+    const details = [];
+    if (done.unavailable) details.push(done.unavailable + ' unavailable');
+    if (done.skipped) details.push(done.skipped + ' skipped');
+    if (stopped && done.index < done.promptable.length) details.push('stopped');
+    if (done.succeeded) details.push('Agent access changed. Reconnect your agent if needed.');
+    FK.toast(done.succeeded + ' of ' + done.total + ' unlocked', details.join(' · ') || undefined);
+  }
+  function advanceQueue() {
+    if (!queue) return;
+    while (queue.index < queue.promptable.length) {
+      const name = queue.promptable[queue.index];
+      const vault = vaultNamed(name);
+      if (vault && vault.exists && !vault.unlocked) { uvName = name; renderUnlockPrompt(); if (!uvDialog.open) FK.openDialog(uvDialog); uvPass.focus(); return; }
+      queue.index++;
+    }
+    finishQueue(false);
+  }
+  function startQueue(names, options) {
+    const requested = uniqueNames(names).filter(name => { const v = vaultNamed(name); return v && !v.unlocked; });
+    const promptable = requested.filter(name => { const v = vaultNamed(name); return v && v.exists; });
+    const unavailable = requested.length - promptable.length + Number(options && options.unavailable || 0);
+    const skipped = Number(options && options.skipped || 0);
+    const total = Number(options && options.total || 0) || requested.length + unavailable + skipped;
+    if (manyDialog.open) manyDialog.close();
+    if (!promptable.length) {
+      const details = [];
+      if (unavailable) details.push(unavailable + ' unavailable');
+      if (skipped) details.push(skipped + ' skipped');
+      if (total) FK.toast('0 of ' + total + ' unlocked', details.join(' · ') || undefined);
+      returnToConnection(options && options.connection);
+      return;
+    }
+    queue = { promptable, index: 0, succeeded: 0, skipped, unavailable, total, connection: options && options.connection || null };
+    advanceQueue();
+  }
+  function openUnlock(name, options) {
+    const vault = vaultNamed(name);
+    if (!vault) { void FK.locateVault(name); return; }
+    if (vault.unlocked) { returnToConnection(options && options.connection); return; }
+    if (!vault.exists) { void FK.locateVault(name); return; }
+    queue = null; uvName = name; uvOperation++;
+    renderUnlockPrompt();
+    FK.openDialog(uvDialog); uvPass.focus();
+    uvDialog.dataset.connection = options && options.connection || '';
+  }
+  function renderMany() {
+    if (!manyRequest || !manyDialog.open) return;
+    const available = manyRequest.names.filter(name => { const v = vaultNamed(name); return v && v.exists && !v.unlocked; });
+    const missing = manyRequest.names.filter(name => { const v = vaultNamed(name); return (!v || !v.exists) && !(v && v.unlocked); });
+    $('#um-title').textContent = manyRequest.connection ? 'Unlock vaults for ' + manyRequest.connection : 'Unlock multiple vaults';
+    $('#um-text').textContent = manyRequest.connection ? 'This connection needs these vaults.' : 'Choose the vaults to unlock.';
+    $('#um-list').innerHTML = available.map(name => '<label class="vault-row"><input type="checkbox" data-unlock-many="' + E(name) + '" checked><span>' + E(name) + '</span><span>Locked</span></label>').join('')
+      + missing.map(name => { const v = vaultNamed(name); return '<div class="vault-row"><i data-icon="warn"></i><span>' + E(name) + '<div class="sub">File missing</div></span><button type="button" class="btn btn-sm" data-locate-vault="' + E(name) + '">Locate…</button></div>'; }).join('');
+    $('#um-all').checked = !!available.length && available.every(name => { const box = $('#um-list input[data-unlock-many="' + CSS.escape(name) + '"]'); return box && box.checked; });
+    $('#um-all').disabled = !available.length;
+    $('#um-start').disabled = !available.length && !manyRequest.connection;
+    err('#um-err', ''); FK.hydrateIcons($('#um-list'));
+  }
+  function openUnlockMany(options) {
+    const names = uniqueNames(options && options.names || FK.vaults.filter(v => !v.unlocked).map(v => v.name));
+    manyRequest = { names, connection: options && options.connection || null };
+    renderMany();
+    FK.openDialog(manyDialog);
+    renderMany();
+  }
+  async function unlockVault(name, passphrase, signal) {
+    await FK.api('/api/vault/unlock', { name, passphrase }, { signal });
+    await FK.load();
+  }
+  async function submitUnlock() {
+    const name = uvName, passphrase = uvPass.value;
+    if (!name) return;
+    if (!passphrase) { err('#uv-err', 'Enter the passphrase.'); uvPass.focus(); return; }
+    const operation = ++uvOperation, aborter = new AbortController();
+    uvAbort = aborter;
+    err('#uv-err', ''); setUnlockBusy(true);
+    try {
+      await unlockVault(name, passphrase, aborter.signal);
+      if (operation !== uvOperation || name !== uvName) return;
+      uvAbort = null;
+      if (FK.selectUnlockVault) FK.selectUnlockVault(name);
+      resetUnlockInput(); setUnlockBusy(false); FK.go();
+      if (queue) {
+        queue.succeeded++; queue.index++;
+        returnToConnection(queue.connection);
+        advanceQueue();
+      } else {
+        const connection = uvDialog.dataset.connection || '';
+        uvName = null; uvOperation++; uvDialog.close();
+        returnToConnection(connection);
+        FK.toast('Vault ' + name + ' unlocked');
+      }
+    } catch (error) {
+      if (operation !== uvOperation || name !== uvName) return;
+      uvAbort = null;
+      setUnlockBusy(false);
+      err('#uv-err', error.code === 'UNLOCK_FAILED' ? 'That passphrase does not open this vault.' : error.message);
+      uvPass.focus(); uvPass.select();
+    }
+  }
+  function cancelUnlockFlow() {
+    uvOperation++; if (uvAbort) uvAbort.abort(); uvAbort = null;
+    uvName = null; uvBusy = false; queue = null; manyRequest = null;
+    resetUnlockInput(); setUnlockBusy(false);
+    if (uvDialog.open) uvDialog.close();
+    if (manyDialog.open) manyDialog.close();
+  }
+  function handleLocked(detail) {
+    const names = detail && Array.isArray(detail.names) ? detail.names : [];
+    if (queue && queue.promptable.some(name => names.includes(name))) { cancelUnlockFlow(); return; }
+    if (!queue && uvName && names.includes(uvName)) cancelUnlockFlow();
+  }
+  function handleNativeLock(detail) {
+    const chosen = manyRequest && manyDialog.open ? Array.from($('#um-list').querySelectorAll('[data-unlock-many]:checked')).map(box => box.dataset.unlockMany) : [];
+    const targets = queue ? queue.promptable : uvName ? [uvName] : chosen;
+    if (detail && (detail.lock === 'all' || targets.some(name => FK.lockEventAffects(name, detail)))) cancelUnlockFlow();
+  }
+  uvForm.addEventListener('submit', e => { e.preventDefault(); void submitUnlock(); });
+  uvDialog.addEventListener('cancel', e => { if (uvBusy || queue) e.preventDefault(); });
+  manyForm.addEventListener('submit', e => {
+    e.preventDefault();
+    const names = Array.from($('#um-list').querySelectorAll('[data-unlock-many]:checked')).map(box => box.dataset.unlockMany);
+    const request = manyRequest; manyRequest = null;
+    if (!names.length && !(request && request.connection)) { manyRequest = request; err('#um-err', 'Choose at least one vault.'); return; }
+    const required = request && request.connection ? request.names.filter(name => { const v = vaultNamed(name); return !(v && v.unlocked); }) : [];
+    const unavailable = required.filter(name => { const v = vaultNamed(name); return !v || !v.exists; }).length;
+    const skipped = required.filter(name => { const v = vaultNamed(name); return v && v.exists && !names.includes(name); }).length;
+    startQueue(names, { connection: request && request.connection, unavailable, skipped, total: request && request.connection ? required.length : 0 });
+  });
+  $('#um-all').addEventListener('change', e => { $('#um-list').querySelectorAll('[data-unlock-many]').forEach(box => { box.checked = e.target.checked; }); });
+  $('#um-list').addEventListener('change', () => { const boxes = Array.from($('#um-list').querySelectorAll('[data-unlock-many]')); $('#um-all').checked = !!boxes.length && boxes.every(box => box.checked); $('#um-start').disabled = !boxes.some(box => box.checked) && !(manyRequest && manyRequest.connection); });
+  manyDialog.addEventListener('close', () => { manyRequest = null; err('#um-err', ''); });
+  FK.unlockFlow = { open: openUnlock, openMany: openUnlockMany, startQueue, unlock: unlockVault, cancel: cancelUnlockFlow, handleLocked, handleNativeLock, refresh: renderMany, lockedCount: () => lockedExisting().length };
 
   document.addEventListener('fk:action', e => {
     const n = e.detail.name, el = e.detail.el;
@@ -2008,7 +2195,8 @@ document.addEventListener('DOMContentLoaded', () => FK.hydrateIcons());
     if (n === 'gs-save') saveGroup();
     if (n === 'vs-choose') void chooseVaultSheetPath();
     if (n === 'vs-save') saveVaultSheet();
-    if (n === 'uv-unlock') doUnlock();
+    if (n === 'uv-stop' && queue && !uvBusy) finishQueue(true);
+    if (n === 'uv-skip' && queue && !uvBusy) { queue.skipped++; queue.index++; advanceQueue(); }
     if (n === 'cf-ok') { $('#confirm').close(); if (confirmFn) confirmFn(); confirmFn = null; }
   });
   function clearEditor(id) {
@@ -2020,14 +2208,14 @@ document.addEventListener('DOMContentLoaded', () => FK.hydrateIcons());
   }
   ['conn-sheet', 'secret-sheet', 'env-sheet', 'json-sheet', 'unlock-vault'].forEach(id => { const dialog = $('#' + id); if (dialog) dialog.addEventListener('close', () => clearEditor(id)); });
   document.addEventListener('fk:vaults-locked', e => {
+    if (FK.unlockFlow) FK.unlockFlow.handleLocked(e.detail);
     const affected = name => e.detail.all || e.detail.names.includes(name);
     const close = id => { const dialog = $('#' + id); if (!dialog) return; if (dialog.open) dialog.close(); clearEditor(id); };
     if (e.detail.all || (D && (affected(D.vault) || Object.values(D.slots || {}).some(s => affected(s.vault)) || (D.bindings || []).some(b => affected(b.vault))))) { close('conn-sheet'); $('#template-sheet').close(); }
     if (e.detail.all || (D2 && affected(D2.vault))) close('secret-sheet');
     if (affected($('#env-vault').value)) close('env-sheet');
     if (affected($('#js-vault').value)) close('json-sheet');
-    if (e.detail.all) { $$('dialog[open]').forEach(d => { d.close(); FK.clearDraftFields(d); }); confirmFn = null; }
-    FK.clearDraftFields($('#unlock'));
+    if (e.detail.all) { $$('dialog[open]:not(#unlock-vault):not(#unlock-many)').forEach(d => { d.close(); FK.clearDraftFields(d); }); confirmFn = null; }
   });
   FK.sheets = { openConn, openSecret, openEnv, openJson, openTemplates, pickGroup, renameGroup, removeGroup, openVaultSheet, openUnlock, confirm: confirmDlg };
 })();
@@ -2086,6 +2274,7 @@ document.addEventListener('DOMContentLoaded', () => FK.hydrateIcons());
         : (v.exists ? '<button type="button" class="lockbtn" data-vault-unlock="' + E(v.name) + '" title="Unlock" aria-label="Unlock ' + E(v.name) + '"><i data-icon="unlock"></i></button>' : '<button type="button" class="lockbtn" data-locate-vault="' + E(v.name) + '" title="Locate missing vault" aria-label="Locate ' + E(v.name) + '"><i data-icon="folder"></i></button>');
       return '<div class="sb-vaultrow' + (v.unlocked ? '' : ' locked') + (sel ? ' selected' : '') + '"><span class="dot"></span><button type="button" class="vlabel" data-vault-view="' + E(v.name) + '">' + E(v.name) + '</button>' + lock + '</div>';
     }).join('');
+    if (FK.unlockFlow.lockedCount() >= 2) h += '<button type="button" class="sb-item" data-action="unlock-multiple">' + FK.icon('unlock') + '<span class="sb-label">Unlock multiple…</span></button>';
     sidebar.innerHTML = h; FK.hydrateIcons(sidebar);
   }
 
@@ -2114,12 +2303,14 @@ document.addEventListener('DOMContentLoaded', () => FK.hydrateIcons());
     const why = FK.state.sessionError ? 'Not in the running session. The session port is unavailable.' : FK.flags(c).length ? 'Not in the running session. A secret it needs is missing, off, or in a locked vault.' : 'Not in the running session.';
     return '<span class="live-dot idle"></span><span>' + E(why) + '</span>';
   }
+  const requiredLocked = c => [...new Set(FK.slots(c).map(slot => slot.ref.vault).filter(name => !FK.unlockedSet.has(name)))];
   function renderDetail() {
     const c = FK.conn(S.sel); if (!c) { detail.innerHTML = '<div class="empty">' + FK.icon('link') + '<b>' + (FK.connections.length ? 'No connection selected' : 'Use your credentials with an agent') + '</b>' + (!FK.connections.length ? '<span>Add a connection, then set up your agent integration.</span><button type="button" class="btn" data-action="agent-integrations">Agent integrations…</button>' : '') + '</div>'; FK.hydrateIcons(detail); return; }
-    const flags = FK.flags(c), slots = FK.slots(c), evs = FK.events.filter(e => e.conn === c.name).slice(0, 5);
+    const flags = FK.flags(c), slots = FK.slots(c), lockedRequired = requiredLocked(c), evs = FK.events.filter(e => e.conn === c.name).slice(0, 5);
     let h = '<div class="detail-head">' + FK.tile(c, 'lg') + '<div class="detail-head-text"><h1>' + E(c.name) + '</h1><div class="url">' + E(c.origin.replace('https://', '')) + ' · ' + E(FK.authLabel(c)) + '</div></div><div class="actions"><button type="button" class="btn" data-action="edit">Edit</button><button type="button" class="btn btn-icon" data-context-open="#ctx-conn" aria-label="More actions"><i data-icon="more"></i></button></div></div>';
     h += '<div class="status-line">' + statusLine(c) + '</div>';
-    flags.forEach(f => { const dv = f.slot ? f.slot.ref.vault : ''; const sv = f.slot ? f.slot.ref.secret : ''; h += '<div class="alert alert-' + (f.sev === 'critical' ? 'critical' : 'warning') + '"><i data-icon="' + (f.sev === 'critical' ? 'shieldwarn' : 'warn') + '"></i><div><b>' + E(f.label) + '.</b> ' + E(f.text) + '</div><div class="alert-actions"><button type="button" class="btn btn-sm" data-action="flag-' + f.id + '" data-vault="' + E(dv) + '" data-secret="' + E(sv) + '">' + f.action + '</button></div></div>'; });
+    if (lockedRequired.length) h += '<div class="alert alert-critical"><i data-icon="shieldwarn"></i><div><b>' + (lockedRequired.length === 1 ? 'Vault ' + E(lockedRequired[0]) + ' is locked.' : 'Required vaults are locked.') + '</b> Unlock ' + (lockedRequired.length === 1 ? 'it' : 'them') + ' to use this connection.</div><div class="alert-actions"><button type="button" class="btn btn-sm" data-action="unlock-required">' + (lockedRequired.length === 1 ? 'Unlock vault' : 'Unlock required vaults…') + '</button></div></div>';
+    flags.filter(f => f.id !== 'locked').forEach(f => { const dv = f.slot ? f.slot.ref.vault : ''; const sv = f.slot ? f.slot.ref.secret : ''; h += '<div class="alert alert-' + (f.sev === 'critical' ? 'critical' : 'warning') + '"><i data-icon="' + (f.sev === 'critical' ? 'shieldwarn' : 'warn') + '"></i><div><b>' + E(f.label) + '.</b> ' + E(f.text) + '</div><div class="alert-actions"><button type="button" class="btn btn-sm" data-action="flag-' + f.id + '" data-vault="' + E(dv) + '" data-secret="' + E(sv) + '">' + f.action + '</button></div></div>'; });
     h += '<div class="group"><div class="group-title">Request example</div>' + FK.translationHTML(c) + '</div>';
     h += '<div class="group"><div class="group-title">Secrets</div>' + (slots.length ? slots.map(s => { const st = FK.slotState(s.ref); const set = st === 'ok'; return '<div class="slot"><div><div class="label">' + E(FK.slotLabel(s)) + '</div>' + FK.chip(s.refStr, c.vault) + (st === 'disabled' ? ' <span class="pill pill-off plain">Turned off</span>' : st === 'locked' ? ' <span class="pill pill-warning">Vault locked</span>' : '') + '</div><div>' + (st === 'locked' ? '<button type="button" class="btn btn-sm" data-action="unlock-vault" data-vault="' + E(s.ref.vault) + '">Unlock</button>' : '<button type="button" class="btn btn-sm" data-action="edit-secret-ref" data-vault="' + E(s.ref.vault) + '" data-secret="' + E(s.ref.secret) + '">' + (set ? 'Edit…' : 'Set value…') + '</button>') + '</div></div>'; }).join('') : '<div class="slot"><div class="muted">No secret needed for this authentication.</div></div>') + '</div>';
     h += '<div class="group"><div class="group-title">Recent use</div>' + (evs.length ? evs.map(evRow).join('') + '<div class="ev"><span></span><button type="button" class="link-btn" style="justify-self:start;font-size:12.5px" data-action="activity-for">All activity for ' + E(c.name) + '</button><span></span></div>' : '<div class="ev"><span class="t">—</span><span class="muted">Not used yet. Ask your agent to use this connection.</span><button type="button" class="link-btn" data-action="agent-integrations">Agent setup…</button></div>') + '</div>';
@@ -2181,6 +2372,12 @@ document.addEventListener('DOMContentLoaded', () => FK.hydrateIcons());
   FK.goView = view => go(view);
   function select(name) { S.sel = name; renderList(); renderDetail(); persist(); }
   FK.gotoConn = function (name) { S.view = 'connections'; S.scope = 'all'; S.query = ''; $('#q').value = ''; S.sel = name; FK.renderVault(); };
+  FK.returnToConnection = function (name) {
+    const connection = FK.conn(name); if (!connection) return;
+    S.view = 'connections'; S.query = ''; $('#q').value = ''; S.sel = name;
+    if ((S.scope === 'attention' && !FK.flags(connection).length) || !scoped().some(c => c.name === name)) S.scope = 'all';
+    FK.renderVault();
+  };
 
   document.addEventListener('click', e => {
     if (FK.current !== 'vault') return;
@@ -2221,8 +2418,10 @@ document.addEventListener('DOMContentLoaded', () => FK.hydrateIcons());
       'import-env': () => FK.sheets.openEnv(S.secretVault), 'import-json': () => FK.sheets.openJson(),
       'edit-secret': () => { const rf = firstSecret(); if (rf) FK.sheets.openSecret(rf.vault, rf.secret); },
       'edit-secret-ref': () => FK.sheets.openSecret(dv, ds),
-      'unlock-vault': () => FK.sheets.openUnlock(dv),
-      'flag-locked': () => FK.sheets.openUnlock(dv),
+      'unlock-vault': () => FK.sheets.openUnlock(dv, { connection: c && c.name }),
+      'unlock-multiple': () => FK.unlockFlow.openMany(),
+      'flag-locked': () => FK.sheets.openUnlock(dv, { connection: c && c.name }),
+      'unlock-required': () => { const names = c ? requiredLocked(c) : []; if (names.length === 1) FK.sheets.openUnlock(names[0], { connection: c.name }); else if (names.length > 1) FK.unlockFlow.openMany({ names, connection: c.name }); },
       'flag-missing': () => FK.sheets.openSecret(dv, ds),
       'flag-disabled': () => FK.did(() => FK.api('/api/secret/enable', { vault: dv, name: ds }), 'Secret turned on'),
       'toggle-secret': () => { const s = FK.secret(dv, ds); if (!s) return; const on = !s.enabled; FK.did(() => FK.api('/api/secret/' + (on ? 'enable' : 'disable'), { vault: dv, name: ds }), on ? 'Secret turned on' : 'Secret turned off'); },
@@ -2257,41 +2456,75 @@ document.addEventListener('DOMContentLoaded', () => FK.hydrateIcons());
 <script>/* Unlock screen: pick a vault, enter its passphrase. Locking ends the session. */
 (function () {
   const $ = FK.$, E = FK.esc;
-  const form = $('#unlock'), pw = $('#pass'), er = $('#unlock-err'), btn = $('#unlock-btn');
-  let target = null;
-  const ready = () => { btn.disabled = false; btn.textContent = 'Unlock'; };
+  const form = $('#unlock'), pw = $('#pass'), er = $('#unlock-err'), btn = $('#unlock-btn'), select = $('#unlock-select');
+  let target = null, initialized = false, pending = false, operation = 0, requestAbort = null;
+  const registered = () => FK.vaults.filter(v => v.registered || v.exists);
+  function scrub() { FK.clearDraftFields(form); form.classList.remove('shake'); er.textContent = ''; er.hidden = true; }
+  function setPending(on) {
+    pending = on; btn.disabled = on; btn.textContent = on ? 'Deriving key…' : 'Unlock';
+    select.disabled = on;
+    $('#unlock-multiple').disabled = on;
+    document.querySelectorAll('[data-unlock-navigation], #unlock-selected button, [data-open="#forgot"]').forEach(el => { el.disabled = on; });
+  }
+  function initialTarget() {
+    const vaults = registered();
+    const explicit = typeof FK.state.startupVault === 'string' ? vaults.find(v => v.name === FK.state.startupVault) : null;
+    const recent = typeof FK.settings.lastVault === 'string' ? vaults.find(v => v.path === FK.settings.lastVault) : null;
+    return (explicit || recent || vaults.find(v => v.exists) || vaults[0] || {}).name || null;
+  }
   FK.renderUnlock = function () {
-    const existing = FK.vaults.filter(v => v.exists);
-    if (!target || !existing.some(v => v.name === target)) target = (existing.find(v => v.name === 'default') || existing[0] || {}).name || null;
+    const vaults = registered();
+    if (!initialized) { target = initialTarget(); initialized = true; }
+    if (target && !vaults.some(v => v.name === target)) target = (vaults.find(v => v.exists) || vaults[0] || {}).name || null;
     const tv = FK.vaults.find(v => v.name === target);
-    $('#unlock-title').textContent = tv ? 'Unlock ' + tv.name : 'Vault file missing';
-    $('#unlock-path').textContent = tv ? '' : 'Locate the original file or an encrypted vault backup. Your connections are kept.';
-    $('#unlock').hidden = !existing.length;
-    $('#unlock-list').innerHTML = existing.map(v => '<button type="button" class="vault-row' + (v.name === target ? ' current' : '') + '" data-unlock-pick="' + E(v.name) + '"><i data-icon="' + (v.unlocked ? 'unlock' : 'lock') + '"></i><span>' + E(v.name) + '<div class="sub">' + E(v.path) + '</div></span><span>' + (v.unlocked ? '<span class="pill pill-good">Unlocked</span>' : '') + '</span></button>').join('');
-    $('#unlock-list').innerHTML += FK.vaults.filter(v => v.registered && !v.exists).map(v => '<div class="vault-row"><i data-icon="warn"></i><span>' + E(v.name) + '<div class="sub">File missing · ' + E(v.path) + '</div></span><button type="button" class="btn btn-sm" data-locate-vault="' + E(v.name) + '">Locate file…</button></div>').join('');
-    FK.hydrateIcons($('#unlock-list'));
+    const multiple = vaults.length > 1;
+    $('#unlock-title').textContent = tv ? (tv.exists ? 'Unlock ' + tv.name : tv.name + ' is missing') : 'Choose a vault';
+    $('#unlock-path').textContent = tv && !tv.exists ? 'Locate the original encrypted vault file.' : '';
+    select.previousElementSibling.hidden = !multiple;
+    select.hidden = !multiple;
+    select.innerHTML = vaults.map(v => '<option value="' + E(v.name) + '"' + (v.name === target ? ' selected' : '') + '>' + E(v.name) + (v.exists ? '' : ' — File missing') + '</option>').join('');
+    $('#unlock-selected').innerHTML = tv ? '<span class="mono">' + E(tv.path) + '</span>' + (!tv.exists ? '<button type="button" class="btn btn-sm" data-locate-vault="' + E(tv.name) + '">Locate…</button>' : '') : '';
+    form.hidden = !tv || !tv.exists;
+    $('#unlock-multiple').hidden = FK.unlockFlow.lockedCount() < 2;
+    setPending(pending); FK.hydrateIcons($('#unlock-selected'));
   };
-  FK.selectUnlockVault = name => { target = name; };
-  $('#unlock-list').addEventListener('click', e => { const b = e.target.closest('[data-unlock-pick]'); if (!b) return; target = b.dataset.unlockPick; er.hidden = true; FK.renderUnlock(); pw.focus(); });
+  FK.selectUnlockVault = name => { if (pending) return; target = name; initialized = true; scrub(); FK.renderUnlock(); };
+  select.addEventListener('change', e => { if (pending) return; target = e.target.value; initialized = true; scrub(); FK.renderUnlock(); if (!form.hidden) pw.focus(); });
+  FK.cancelPrimaryUnlock = function () {
+    operation++; if (requestAbort) requestAbort.abort(); requestAbort = null;
+    pending = false; scrub(); setPending(false);
+  };
+  FK.handlePrimaryNativeLock = function (detail) {
+    if (detail && (detail.lock === 'all' || (target && FK.lockEventAffects(target, detail)))) FK.cancelPrimaryUnlock();
+  };
   FK.lock = async function () {
-    const unlocked = FK.vaults.filter(v => v.unlocked);
-    try { for (const v of unlocked) await FK.api('/api/vault/lock', { name: v.name }); } catch (error) { FK.toast(error.message); }
-    pw.value = ''; er.hidden = true; ready();
+    FK.cancelPrimaryUnlock();
+    if (FK.unlockFlow) FK.unlockFlow.cancel();
+    try { await FK.api('/api/vault/lock-all', {}); } catch (error) { FK.toast(error.message); }
     await FK.load(); FK.go();
   };
   form.addEventListener('submit', async e => {
     e.preventDefault();
-    const fail = m => { form.classList.remove('shake'); void form.offsetWidth; form.classList.add('shake'); er.textContent = m; er.hidden = false; ready(); pw.focus(); pw.select(); };
-    if (!target) return fail('Choose a vault to unlock.');
-    if (!pw.value) return fail('Enter the passphrase for this vault.');
-    er.hidden = true; btn.disabled = true; btn.textContent = 'Deriving key…';
+    const fail = m => { form.classList.remove('shake'); void form.offsetWidth; form.classList.add('shake'); er.textContent = m; er.hidden = false; setPending(false); pw.focus(); pw.select(); };
+    const name = target, passphrase = pw.value;
+    if (!name) return fail('Choose a vault to unlock.');
+    if (!passphrase) return fail('Enter the passphrase for this vault.');
+    const request = ++operation, aborter = new AbortController();
+    requestAbort = aborter;
+    er.hidden = true; setPending(true);
     try {
-      await FK.api('/api/vault/unlock', { name: target, passphrase: pw.value });
-      pw.value = ''; ready(); await FK.load(); FK.go();
+      await FK.unlockFlow.unlock(name, passphrase, aborter.signal);
+      if (request !== operation) return;
+      requestAbort = null;
+      scrub(); setPending(false); FK.go();
     } catch (error) {
+      if (request !== operation) return;
+      requestAbort = null;
       fail(error.code === 'UNLOCK_FAILED' ? 'That passphrase does not open this vault.' : error.message);
     }
   });
+  document.addEventListener('fk:action', e => { if (FK.current === 'unlock' && e.detail.name === 'unlock-multiple' && !pending) FK.unlockFlow.openMany(); });
+  document.addEventListener('fk:vaults-locked', e => { if (e.detail.names.includes(target)) FK.cancelPrimaryUnlock(); });
 })();
 </script>
 <script>/* First run / add vault: create or open. */
@@ -2368,7 +2601,7 @@ document.addEventListener('DOMContentLoaded', () => FK.hydrateIcons());
   const NAMES = { general: 'General', security: 'Security', sessions: 'Sessions', vault: 'Vaults', advanced: 'Advanced' };
   const err = (id, m) => { const e = $(id); e.textContent = m || ''; e.hidden = !m; };
   const day = t => new Date(t).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-  let ppVault = null;
+  let ppVault = null, policyVault = null, policySaving = false;
   let integrations = null, integrationsLoading = false, integrationsLoaded = false, managingHost = null, managingAction = null;
   const integrationErrors = {};
 
@@ -2448,13 +2681,54 @@ document.addEventListener('DOMContentLoaded', () => FK.hydrateIcons());
       if (v.name !== 'default') acts.push('<button type="button" class="btn btn-sm btn-danger" data-remove-vault="' + E(v.name) + '">Remove</button>');
       return '<div class="pref-row"><span class="lbl">' + E(v.name) + '</span><div class="opts"><div class="mono" style="font-size:12px">' + E(v.path) + '</div><div class="opt"><span class="desc">' + st + '</span></div><div class="opt">' + acts.join('') + '</div></div></div>';
     }).join('<div class="pref-sep"></div>');
+    const policyVaults = FK.vaults.filter(v => v.registered || v.exists);
+    if (!policyVault || !policyVaults.some(v => v.name === policyVault)) policyVault = (policyVaults[0] || {}).name || null;
+    const policy = policyVault ? FK.vaultPolicy(policyVault) : null;
+    const effective = policy || { idleLockMinutes: Number(FK.settings.idleLockMinutes) || 0, lockOnSleep: !!FK.settings.lockOnSleep, lockOnScreenLock: !!FK.settings.lockOnScreenLock };
+    const stays = [];
+    if (!effective.lockOnSleep) stays.push('sleep');
+    if (!effective.lockOnScreenLock) stays.push('screen lock');
+    if (!effective.idleLockMinutes) stays.push('inactivity');
+    const consequence = policy
+      ? (stays.length ? 'Stays unlocked through ' + stays.join(', ') + ' until another lock action.' : 'Locks for every enabled app event.')
+      : 'Uses the app defaults in Security.';
+    const disabled = policySaving ? ' disabled' : '';
+    const policyEditor = FK.app && policyVault ? '<div class="pref-sep"></div><div class="pref-row"><span class="lbl">Automatic locking</span><div class="opts vault-policy"><div class="opt"><select class="select" id="vault-policy-vault" aria-label="Vault"' + disabled + '>' + policyVaults.map(v => '<option value="' + E(v.name) + '"' + (v.name === policyVault ? ' selected' : '') + '>' + E(v.name) + '</option>').join('') + '</select><select class="select" id="vault-policy-mode" aria-label="Locking policy"' + disabled + '><option value="defaults"' + (policy ? '' : ' selected') + '>Use app defaults</option><option value="custom"' + (policy ? ' selected' : '') + '>Custom</option></select></div><div id="vault-policy-custom"' + (policy ? '' : ' hidden') + '><label class="opt" for="vault-policy-idle"><span>After</span><select class="select" id="vault-policy-idle" aria-label="Lock vault after inactivity"' + disabled + '><option value="0">Off</option><option value="1">1 minute idle</option><option value="5">5 minutes idle</option><option value="15">15 minutes idle</option><option value="30">30 minutes idle</option><option value="60">1 hour idle</option></select></label><label class="opt"><button type="button" role="switch" aria-checked="' + effective.lockOnSleep + '" data-vault-policy-setting="lockOnSleep"' + disabled + '></button><span>When the Mac sleeps</span></label><label class="opt"><button type="button" role="switch" aria-checked="' + effective.lockOnScreenLock + '" data-vault-policy-setting="lockOnScreenLock"' + disabled + '></button><span>When the screen locks</span></label></div><span class="desc" id="vault-policy-consequence">' + E(consequence) + '</span></div></div>' : '';
     const setupAction = FK.app
       ? '<div class="opt"><button type="button" class="btn" id="backup-setup" data-action="settings-backup-setup"><i data-icon="archive"></i>Back up setup…</button></div>'
       : '<span class="desc">Use the BlindDrop Mac app to choose a backup folder.</span>';
-    $('#vaults-panel').innerHTML = rows + '<div class="pref-row"><span class="lbl"></span><div class="opts"><div class="opt"><button type="button" class="btn" data-action="settings-add-vault"><i data-icon="plus"></i>Add or open a vault…</button></div></div></div><div class="pref-sep"></div><div class="pref-row"><span class="lbl">Setup backup</span><div class="opts">' + setupAction + '<span class="desc">Copies every encrypted vault plus connection references, registry, groups and settings. Vaults keep separate passphrases; the other files remain owner-only plaintext metadata. Sessions and Activity are excluded.</span></div></div><div class="pref-row"><span class="lbl">Last vault export</span><div class="opts"><span class="desc">' + (FK.settings.lastBackupAt ? E(day(FK.settings.lastBackupAt)) : 'Never') + '</span></div></div><div class="pref-sep"></div><div class="pref-row"><span class="lbl">Activity log</span><div class="opts"><div class="mono" style="font-size:12px">' + E(FK.state.logPath || '') + '</div><div class="opt">' + (FK.app ? '<button type="button" class="btn btn-sm" data-reveal-path="' + E(FK.state.logPath || '') + '">Reveal in Finder</button>' : '') + '<button type="button" class="btn btn-sm" data-action="settings-open-activity">Open Activity</button></div></div></div>';
+    $('#vaults-panel').innerHTML = rows + '<div class="pref-row"><span class="lbl"></span><div class="opts"><div class="opt"><button type="button" class="btn" data-action="settings-add-vault"><i data-icon="plus"></i>Add or open a vault…</button></div></div></div>' + policyEditor + '<div class="pref-sep"></div><div class="pref-row"><span class="lbl">Setup backup</span><div class="opts">' + setupAction + '<span class="desc">Copies every encrypted vault plus connection references, registry, groups and settings. Vaults keep separate passphrases; the other files remain owner-only plaintext metadata. Sessions and Activity are excluded.</span></div></div><div class="pref-row"><span class="lbl">Last vault export</span><div class="opts"><span class="desc">' + (FK.settings.lastBackupAt ? E(day(FK.settings.lastBackupAt)) : 'Never') + '</span></div></div><div class="pref-sep"></div><div class="pref-row"><span class="lbl">Activity log</span><div class="opts"><div class="mono" style="font-size:12px">' + E(FK.state.logPath || '') + '</div><div class="opt">' + (FK.app ? '<button type="button" class="btn btn-sm" data-reveal-path="' + E(FK.state.logPath || '') + '">Reveal in Finder</button>' : '') + '<button type="button" class="btn btn-sm" data-action="settings-open-activity">Open Activity</button></div></div></div>';
+    if ($('#vault-policy-idle')) $('#vault-policy-idle').value = String(effective.idleLockMinutes);
     FK.hydrateIcons($('#vaults-panel'));
   }
-  document.addEventListener('fk:switch', e => { const b = e.target.closest('[data-setting]'); if (!b) return; const patch = {}; patch[b.dataset.setting] = e.detail; FK.writeSettings(patch).then(FK.renderSettings).catch(error => { FK.toast(error.message); FK.renderSettings(); }); });
+  function writeVaultPolicy(policy) {
+    if (!policyVault || policySaving) return Promise.resolve();
+    policySaving = true;
+    $('#vaults-panel').querySelectorAll('#vault-policy-vault, #vault-policy-mode, #vault-policy-idle, [data-vault-policy-setting]').forEach(control => { control.disabled = true; });
+    const next = { ...(FK.settings.vaultLockPolicies || {}) };
+    if (policy) Object.defineProperty(next, policyVault, { value: policy, enumerable: true, configurable: true, writable: true }); else delete next[policyVault];
+    return FK.writeSettings({ vaultLockPolicies: next }).then(() => { policySaving = false; FK.renderSettings(); }).catch(error => { policySaving = false; FK.toast(error.message); FK.renderSettings(); });
+  }
+  document.addEventListener('fk:switch', e => {
+    const vaultSetting = e.target.closest('[data-vault-policy-setting]');
+    if (vaultSetting && policyVault) {
+      const current = FK.vaultPolicy(policyVault); if (!current) return;
+      const next = { ...current, [vaultSetting.dataset.vaultPolicySetting]: e.detail };
+      void writeVaultPolicy(next); return;
+    }
+    const b = e.target.closest('[data-setting]'); if (!b) return; const patch = {}; patch[b.dataset.setting] = e.detail; FK.writeSettings(patch).then(FK.renderSettings).catch(error => { FK.toast(error.message); FK.renderSettings(); });
+  });
+  $('#vaults-panel').addEventListener('change', e => {
+    if (e.target.id === 'vault-policy-vault') { policyVault = e.target.value; renderVaults(); return; }
+    if (e.target.id === 'vault-policy-mode') {
+      if (e.target.value === 'defaults') { void writeVaultPolicy(null); return; }
+      void writeVaultPolicy({ idleLockMinutes: Number(FK.settings.idleLockMinutes) || 0, lockOnSleep: !!FK.settings.lockOnSleep, lockOnScreenLock: !!FK.settings.lockOnScreenLock }); return;
+    }
+    if (e.target.id === 'vault-policy-idle') {
+      const value = Number(e.target.value), current = FK.vaultPolicy(policyVault);
+      if (current && [0, 1, 5, 15, 30, 60].includes(value)) void writeVaultPolicy({ ...current, idleLockMinutes: value });
+    }
+  });
   $('#idle-lock-minutes').addEventListener('change', e => { const n = Number(e.target.value); if (![0, 1, 5, 15, 30, 60].includes(n)) { FK.renderSettings(); return; } FK.writeSettings({ idleLockMinutes: n }).then(FK.renderSettings).catch(error => { FK.toast(error.message); FK.renderSettings(); }); });
   $('#session-port').addEventListener('change', e => { const n = Number(e.target.value.trim()); if (!Number.isInteger(n) || n < 1 || n > 65535) { err('#port-err', 'Use a port number from 1 to 65535.'); return; } err('#port-err', ''); FK.writeSettings({ sessionPort: n }).then(async () => { if (Number(e.target.value) === n) e.target.value = FK.settings.sessionPort; integrations = null; integrationsLoaded = false; await loadIntegrations(); FK.renderSettings(); }).catch(error => err('#port-err', error.message)); });
 
@@ -2534,7 +2808,14 @@ document.addEventListener('DOMContentLoaded', () => FK.hydrateIcons());
       if (name === 'settings-tab' && FK.mode === 'settings') { FK.selectTab($('#settings-tabs'), detail); return; }
       if (name === 'about') return FK.openDialog('#about');
       if (name === 'shortcuts') return FK.openDialog('#shortcuts');
-      if (name === 'refresh-state') return void FK.load().catch(() => { });
+      if (name === 'refresh-state') {
+        if (detail && detail.lock) {
+          if (FK.handlePrimaryNativeLock) FK.handlePrimaryNativeLock(detail);
+          if (FK.unlockFlow) FK.unlockFlow.handleNativeLock(detail);
+        }
+        if (detail && detail.intent) return;
+        return void FK.load().catch(() => { });
+      }
       await initialLoad;
       document.dispatchEvent(new CustomEvent('fk:action', { detail: { name, el: document.body } }));
     });

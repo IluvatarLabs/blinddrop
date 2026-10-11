@@ -30,6 +30,7 @@ import { validateName } from "./vault.js";
 const MAX_LOG_TAIL_BYTES = 4 * 1024 * 1024;
 const MAX_UI_BYTES = 4_096;
 const MAX_RECENT_VAULTS = 10;
+const MAX_VAULT_LOCK_POLICIES = 256;
 const MAX_GROUPS = 64;
 const MAX_GROUPS_PER_CONNECTION = 16;
 export const MAX_ACTIVITY_LIMIT = 2_000;
@@ -42,12 +43,19 @@ export interface OwnerSettings {
   lockOnSleep: boolean;
   lockOnScreenLock: boolean;
   idleLockMinutes: number;
+  vaultLockPolicies: Record<string, VaultLockPolicy>;
   openAtLogin: boolean;
   showDockIcon: boolean;
   lastVault: string | null;
   recentVaults: string[];
   lastBackupAt: string | null;
   ui: Record<string, unknown>;
+}
+
+export interface VaultLockPolicy {
+  lockOnSleep: boolean;
+  lockOnScreenLock: boolean;
+  idleLockMinutes: 0 | 1 | 5 | 15 | 30 | 60;
 }
 
 /**
@@ -80,6 +88,7 @@ export const SETTINGS_DEFAULTS: Omit<OwnerSettings, "sessionPort"> = {
   lockOnSleep: true,
   lockOnScreenLock: false,
   idleLockMinutes: 0,
+  vaultLockPolicies: {},
   openAtLogin: false,
   showDockIcon: true,
   lastVault: null,
@@ -92,6 +101,33 @@ const UiSchema = z
   .record(z.string(), z.unknown())
   .refine((value) => Buffer.byteLength(JSON.stringify(value), "utf8") <= MAX_UI_BYTES);
 
+const IdleLockMinutesSchema = z.union([
+  z.literal(0),
+  z.literal(1),
+  z.literal(5),
+  z.literal(15),
+  z.literal(30),
+  z.literal(60),
+]);
+const VaultNameSchema = z.string().refine((name) => {
+  try {
+    validateName(name);
+    return true;
+  } catch {
+    return false;
+  }
+});
+const VaultLockPolicySchema = z
+  .object({
+    lockOnSleep: z.boolean(),
+    lockOnScreenLock: z.boolean(),
+    idleLockMinutes: IdleLockMinutesSchema,
+  })
+  .strict();
+const VaultLockPoliciesSchema = z
+  .record(VaultNameSchema, VaultLockPolicySchema)
+  .refine((policies) => Object.keys(policies).length <= MAX_VAULT_LOCK_POLICIES);
+
 /** Every field is optional: a patch and a stored file are validated alike. */
 const SettingsSchema = z
   .object({
@@ -100,7 +136,8 @@ const SettingsSchema = z
     sessionFile: z.boolean(),
     lockOnSleep: z.boolean(),
     lockOnScreenLock: z.boolean(),
-    idleLockMinutes: z.union([z.literal(0), z.literal(1), z.literal(5), z.literal(15), z.literal(30), z.literal(60)]),
+    idleLockMinutes: IdleLockMinutesSchema,
+    vaultLockPolicies: VaultLockPoliciesSchema,
     openAtLogin: z.boolean(),
     showDockIcon: z.boolean(),
     lastVault: z.string().min(1).nullable(),
@@ -220,6 +257,7 @@ function defaultSettings(sessionPort?: number): OwnerSettings {
 function mergeSettings(base: OwnerSettings, patch: Partial<OwnerSettings>): OwnerSettings {
   const merged: OwnerSettings = { ...base, ...patch };
   merged.recentVaults = [...new Set(merged.recentVaults)].slice(0, MAX_RECENT_VAULTS);
+  merged.vaultLockPolicies = { ...merged.vaultLockPolicies };
   merged.ui = { ...merged.ui };
   return merged;
 }

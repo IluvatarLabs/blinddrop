@@ -47,7 +47,7 @@ tarball dependency; an ordinary install can retain the previous copy:
 
 ```sh
 npm run vendor
-npm install --force ./vendor/blinddrop-0.6.0.tgz
+npm install --force ./vendor/blinddrop-0.6.1.tgz
 ```
 
 `package-lock.json` is not committed. The only entry under `dependencies` is the
@@ -139,10 +139,10 @@ The application menu is the only App, File, Edit, View, Window and Help menu;
 the page draws no menu bar of its own in the app. Workspace menu commands focus or reopen the main window. Lock All calls the owner runtime directly, including with no open window; Settings opens independently.
 
 Commands that require an unlocked workspace are disabled while every vault is
-locked. Settings → Security can lock all vaults after 1, 5, 15, 30 or 60 minutes
+locked. Settings → Security sets the default lock timeout of 1, 5, 15, 30 or 60 minutes
 without keyboard/mouse activity anywhere on the Mac, including with no window
 open. Off is the default, preserving existing behavior. Agent requests do not
-reset the system idle clock.
+reset the system idle clock. Settings → Vault → Automatic locking can override the defaults for one vault. Use app defaults removes that override; Lock All and Quit always end access to every vault.
 
 A startup failure shows a static error and quits rather than opening an unusable window.
 

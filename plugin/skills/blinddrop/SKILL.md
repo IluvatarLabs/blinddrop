@@ -5,7 +5,7 @@ license: PolyForm-Noncommercial-1.0.0
 compatibility: Requires a running BlindDrop app session and an agent host with local HTTP MCP support; an owner who explicitly uses the installed CLI may instead use `blinddrop run`.
 metadata:
   component: agent-credential-use
-  version: "0.6.0"
+  version: "0.6.1"
 ---
 
 # BlindDrop: use credentials you are not allowed to read
@@ -97,11 +97,17 @@ command to run.
   installed-CLI workflow, the CLI's hidden prompt.
 - Never store a credential you were given by accident: report it and stop.
 
-## When the connection you need does not exist
+## When the connection you need is unavailable
 
-`list_connections` is the authority. If the connection you need is not there,
-do not look for the key elsewhere. Ask the owner to open BlindDrop, unlock the
-target vault, choose **New Connection**, select the matching template (or
+`list_connections` lists only connections available to this session. An absent
+connection may already exist but need one or more locked vaults. Ask the owner
+to open BlindDrop and check that connection's availability, then unlock its
+required vaults. Never ask for passphrases or unlock unrelated vaults. After
+access changes, call `list_connections` again; if this host retains the old
+session, use the reload guidance below. Do not retry an ambiguous failed write.
+
+If the owner confirms the connection has not been configured, they choose
+**New Connection**, select the matching template (or
 **Custom**), enter the credential in the protected fields, and save. For a
 credential with several parts or a separate vault, the owner uses one typed
 multi-field secret; references can name a vault and field as

@@ -146,6 +146,8 @@ const PasswdBody = z.object({ vault: z.string(), current: z.string(), new: z.str
 export interface OwnerUiOptions {
   /** Register an explicitly selected archive before opening the owner page. */
   vaultPath?: string;
+  /** Prefer only an archive explicitly supplied for this process start. */
+  startupVaultPath?: string;
   port?: number;
   sessionPort?: number;
   sessionFile?: string;
@@ -161,6 +163,7 @@ export interface OwnerUi {
   closed: Promise<void>;
   hasUnlockedVaults(): boolean;
   lockAll(): Promise<void>;
+  lockForEvent(reason: "sleep" | "screen-lock" | "idle", idleSeconds?: number): Promise<boolean>;
   close(): Promise<void>;
 }
 
@@ -292,6 +295,15 @@ export async function startOwnerUi(options: OwnerUiOptions): Promise<OwnerUi> {
       registerVault(name, options.vaultPath);
     }
   }
+  const startupEntry = options.startupVaultPath === undefined
+    ? undefined
+    : loadStoredRegistry(configDir).vaults.find(
+      entry => resolve(entry.path) === resolve(options.startupVaultPath!),
+    );
+  if (options.startupVaultPath !== undefined && startupEntry === undefined) {
+    throw new BlindDropError("VAULT_NOT_FOUND");
+  }
+  const startupVault = startupEntry?.name ?? null;
 
   const token = randomBytes(32).toString("base64url");
   const tokenBytes = Buffer.from(token, "utf8");
@@ -586,6 +598,7 @@ export async function startOwnerUi(options: OwnerUiOptions): Promise<OwnerUi> {
     const registered = new Set(loadStoredRegistry(configDir).vaults.map(entry => entry.name));
     return {
       version: VERSION,
+      startupVault,
       configDir,
       sessionFilePath,
       logPath,
@@ -741,12 +754,25 @@ export async function startOwnerUi(options: OwnerUiOptions): Promise<OwnerUi> {
         return state();
       }
     }],
+    ["/api/vault/lock-all", {
+      POST: async body => {
+        parse(EmptyBody, body);
+        await lockAll();
+        return state();
+      }
+    }],
     ["/api/vault/remove", {
       POST: async body => {
         const input = parse(VaultNameBody, body);
         validateName(input.name);
         if (input.name === DEFAULT_VAULT_NAME) throw new BlindDropError("INVALID_INPUT");
         requireEntry(input.name);
+        const settings = readSettings(configDir);
+        if (Object.hasOwn(settings.vaultLockPolicies, input.name)) {
+          const vaultLockPolicies = { ...settings.vaultLockPolicies };
+          delete vaultLockPolicies[input.name];
+          writeSettings(configDir, { vaultLockPolicies });
+        }
         releaseVault(input.name);
         unregisterVault(input.name);
         await syncSession();
@@ -1075,6 +1101,34 @@ export async function startOwnerUi(options: OwnerUiOptions): Promise<OwnerUi> {
     await syncSession();
   }
 
+  async function lockForEvent(
+    reason: "sleep" | "screen-lock" | "idle",
+    idleSeconds = 0,
+  ): Promise<boolean> {
+    const settings = readSettings(configDir);
+    const defaults = {
+      lockOnSleep: settings.lockOnSleep,
+      lockOnScreenLock: settings.lockOnScreenLock,
+      idleLockMinutes: settings.idleLockMinutes,
+    };
+    const due: string[] = [];
+    for (const name of passphrases.keys()) {
+      const policy = Object.hasOwn(settings.vaultLockPolicies, name)
+        ? settings.vaultLockPolicies[name]
+        : defaults;
+      if (
+        (reason === "sleep" && policy.lockOnSleep) ||
+        (reason === "screen-lock" && policy.lockOnScreenLock) ||
+        (reason === "idle" && policy.idleLockMinutes > 0 &&
+          idleSeconds >= policy.idleLockMinutes * 60)
+      ) due.push(name);
+    }
+    if (due.length === 0) return false;
+    for (const name of due) releaseVault(name);
+    await syncSession();
+    return true;
+  }
+
   function hasUnlockedVaults(): boolean {
     return passphrases.size > 0;
   }
@@ -1107,6 +1161,7 @@ export async function startOwnerUi(options: OwnerUiOptions): Promise<OwnerUi> {
     closed,
     hasUnlockedVaults,
     lockAll,
+    lockForEvent,
     close
   };
 }

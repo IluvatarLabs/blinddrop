@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.1] - 2026-10-11
+
+- Unlock selects the requested or last-used vault, clears passphrases when changing selection, and supports Return in additional-vault prompts. Pending submissions cannot be cancelled or redirected misleadingly.
+- Optional Unlock multiple prompts separately for selected vaults, keeps successful unlocks available, and supports Skip/Stop. Connections offer their required vaults and retain their detail view after unlocking.
+- Per-vault automatic locking inherits app defaults or uses a complete custom sleep, screen-lock and idle preference, including with no window open. Manual Lock All uses one owner-runtime operation and overrides every preference.
+- Agent guidance distinguishes unavailable connections from unconfigured ones and states supported host reconnection steps. Runtime, app and integration versions are aligned.
+
 ## [0.6.0] - 2026-10-06
 
 - App and CLI HTTP sessions choose a random port once, save it in existing settings, and advance if occupied. Settings or CLI `--port` can change the preference; managed integrations follow the actual endpoint even with the window closed. Manual plugins use the reported URL instead of assuming 8787.

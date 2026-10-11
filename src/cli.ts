@@ -533,10 +533,11 @@ async function main(): Promise<void> {
     .option("--no-browser", "print the owner UI address instead of opening the system browser")
     .action(async (options: { port: string; browser: boolean }) => {
       const port = parsePort(options.port);
-      // v0.5.1: the owner UI is registry-driven; the default vault is managed at
-      // defaultVaultPath(). The --vault global still selects the archive for the
-      // other single-vault subcommands.
-      const ui = await startOwnerUi({ port });
+      // Keep the registry-driven default; an explicit archive expresses owner intent.
+      const startupVaultPath = program.getOptionValueSource("vault") === "cli"
+        ? program.opts<{ vault: string }>().vault
+        : undefined;
+      const ui = await startOwnerUi({ port, vaultPath: startupVaultPath, startupVaultPath });
       const stop = () => {
         void ui.close();
       };

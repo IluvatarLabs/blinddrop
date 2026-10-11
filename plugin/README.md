@@ -33,6 +33,11 @@ verified authenticated request.
 
 Keep **Agent access** enabled and unlock the vaults needed by the connection.
 The helper reads the current session capability; no token needs to be copied.
+A connection is available only when all vaults containing its credentials are
+unlocked. The agent's connection list omits unavailable connections; it does not
+prove that they have not been configured. Lock/unlock and owner edits refresh
+the app's session. A host retaining the previous session may need Claude Code's
+`/reload-plugins` or a new Codex session before listing connections again.
 A change to the session port updates the managed plugin. Follow the displayed
 reload instruction in the host. Update also repairs the managed integration
 after moving or replacing the app. Remove disables this integration without

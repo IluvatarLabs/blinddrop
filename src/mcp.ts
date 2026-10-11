@@ -78,7 +78,7 @@ export function createMcpServer(
   extraPatterns: readonly string[] = []
 ): McpServer {
   const server = new McpServer(
-    { name: "blinddrop", version: "0.5.1" },
+    { name: "blinddrop", version: "0.6.1" },
     { capabilities: { tools: {} } }
   );
 
