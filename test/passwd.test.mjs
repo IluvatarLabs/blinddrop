@@ -13,6 +13,11 @@ import {
   spawnOwner,
 } from "./support/owner-session.mjs";
 
+function listedConnections(result) {
+  return result.structuredContent.connections.map(({ name, origin, authType, recipe, tool }) =>
+    ({ name, origin, authType, recipe, tool }));
+}
+
 async function failedOwner(vault, passphrase, args, secret) {
   const run = spawnOwner(vault, passphrase, args, secret);
   run.child.stdin.end();
@@ -110,10 +115,12 @@ test("passwd preserves the archive and changes only the current copy's unlock", 
     name: "list_connections",
     arguments: {},
   });
-  assert.deepEqual(currentConnections.structuredContent.connections, [{
+  assert.deepEqual(listedConnections(currentConnections), [{
     name: "api",
     origin: "https://api.example.com",
     authType: "bearer",
+    recipe: null,
+    tool: "execute_http",
   }]);
   const currentTraffic = await currentSession.close();
 
@@ -122,10 +129,12 @@ test("passwd preserves the archive and changes only the current copy's unlock", 
     name: "list_connections",
     arguments: {},
   });
-  assert.deepEqual(backupConnections.structuredContent.connections, [{
+  assert.deepEqual(listedConnections(backupConnections), [{
     name: "api",
     origin: "https://api.example.com",
     authType: "bearer",
+    recipe: null,
+    tool: "execute_http",
   }]);
   const backupTraffic = await backupSession.close();
 

@@ -679,8 +679,9 @@ test("errors and mode-0600 use logs exclude credentials and request values", asy
     const events = contents.trim().split("\n").map((line) => JSON.parse(line));
     assert.deepEqual(
       Object.keys(events[0]).sort(),
-      ["code", "connection", "grantId", "httpStatus", "outcome", "timestamp"],
+      ["code", "connection", "grantId", "httpStatus", "outcome", "timestamp", "tool"],
     );
+    assert.equal(events[0].tool, "execute_http");
     assert.equal(events[0].outcome, "success");
     assert.equal(events[0].httpStatus, 401);
     assert.equal(events[1].code, "RESPONSE_BLOCKED");

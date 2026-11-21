@@ -40,7 +40,7 @@ export function createBrokerSession(
   vaults: VaultUnlock[],
   requestedConnections: string[],
   ttlSeconds: number,
-  options: { connections?: Record<string, Connection>; logPath?: string } = {},
+  options: { connections?: Record<string, Connection>; logPath?: string; expiresAt?: number } = {},
 ): BrokerSession {
   if (vaults.length === 0) {
     throw new BlindDropError("INVALID_INPUT");
@@ -110,7 +110,8 @@ export function createBrokerSession(
     throw new BlindDropError("INTERNAL_ERROR");
   }
 
-  const expiresAt = Date.now() + ttlSeconds * 1000;
+  // The owner runtime's brokers expire with its agent token.
+  const expiresAt = options.expiresAt ?? Date.now() + ttlSeconds * 1000;
   const broker = new Broker(
     snapshot,
     { id: randomUUID(), connections, expiresAt },

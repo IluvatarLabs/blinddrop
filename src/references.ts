@@ -141,11 +141,12 @@ export function authSecretRefs(
     case "bearer": case "header": case "query": return [parse(auth.secret)];
     case "basic": return [auth.usernameSecret, auth.passwordSecret].filter(present).map(parse);
     case "bindings": return auth.bindings.map((binding) => parse(binding.secret));
-    case "oauth2": return [auth.clientSecret, auth.refreshSecret].filter(present).map(parse);
+    case "oauth2": return [auth.clientIdSecret, auth.clientSecret, auth.refreshSecret].filter(present).map(parse);
     case "jwt-bearer": return [parse(auth.privateKeySecret)];
     case "aws-sigv4":
       return [auth.accessKeyIdSecret, auth.secretAccessKeySecret, auth.sessionTokenSecret]
         .filter(present).map(parse);
+    case "modal": return [parse(auth.tokenIdSecret), parse(auth.tokenSecretSecret)];
   }
 }
 
@@ -199,6 +200,7 @@ function mapAuthentication(auth: Authentication, q: (ref: string) => string): Au
     case "oauth2":
       return {
         ...auth,
+        ...(auth.clientIdSecret === undefined ? {} : { clientIdSecret: q(auth.clientIdSecret) }),
         ...(auth.clientSecret === undefined ? {} : { clientSecret: q(auth.clientSecret) }),
         ...(auth.refreshSecret === undefined ? {} : { refreshSecret: q(auth.refreshSecret) }),
       };
@@ -211,6 +213,8 @@ function mapAuthentication(auth: Authentication, q: (ref: string) => string): Au
         secretAccessKeySecret: q(auth.secretAccessKeySecret),
         ...(auth.sessionTokenSecret === undefined ? {} : { sessionTokenSecret: q(auth.sessionTokenSecret) }),
       };
+    case "modal":
+      return { ...auth, tokenIdSecret: q(auth.tokenIdSecret), tokenSecretSecret: q(auth.tokenSecretSecret) };
   }
 }
 

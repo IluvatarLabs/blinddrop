@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
 import { once } from 'node:events';
 import { existsSync } from 'node:fs';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:https';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -21,6 +21,8 @@ test('Lock All revokes access and a complete setup restores into fresh locked st
   const restoredConfig = join(restoredHome, '.config/blinddrop');
   const backupPath = join(root, 'setup-backup');
   const passphrases = { personal: randomBytes(24).toString('hex'), work: randomBytes(24).toString('hex') };
+  // The Mac app's sealed Touch ID / Without asking passphrases; a disposable stand-in value.
+  const quickUnlock = `${JSON.stringify({ version: 1, vaults: { work: { mode: 'without-asking', sealed: randomBytes(48).toString('base64') } } })}\n`;
   const credential = randomBytes(24).toString('hex');
   let ui, receiver;
   const request = async (path, body) => {
@@ -105,9 +107,13 @@ test('Lock All revokes access and a complete setup restores into fresh locked st
     assert.equal(await execute(), true);
 
     const sourceSession = (await api('/api/state')).sessionFilePath;
+    const unlockedToken = JSON.parse(await readFile(sourceSession, 'utf8')).token;
     await ui.lockAll();
-    assert.equal(existsSync(sourceSession), false);
-    assert.equal((await api('/api/state')).session, null);
+    // Lock All revokes the token; the endpoint stays with nothing usable.
+    const lockedSession = JSON.parse(await readFile(sourceSession, 'utf8'));
+    assert.notEqual(lockedSession.token, unlockedToken);
+    assert.deepEqual(lockedSession.connections, {});
+    assert.deepEqual((await api('/api/state')).session.connections, {});
     await api('/api/vault/unlock', { name: 'work', passphrase: passphrases.work });
     const backedUp = await api('/api/setup/backup', { path: backupPath });
     assert.equal(backedUp.vaults, 2);
@@ -140,9 +146,13 @@ test('Lock All revokes access and a complete setup restores into fresh locked st
     assert.equal(firstUse.vaults.some(vault => vault.exists), false);
     assert.equal(firstUse.vaults[0].registered, false);
     await api('/api/settings', { appearance: 'light' });
+    await writeFile(join(restoredConfig, 'quick-unlock.json'), quickUnlock, { mode: 0o600 });
+    // Neither the running runtime's own session file nor a leftover quick-unlock file blocks the fresh-state restore.
     const restored = await api('/api/setup/restore', { path: backupPath });
+    assert.equal(existsSync(join(restoredConfig, 'quick-unlock.json')), false,
+      'restore discards sealed passphrases, so every restored vault starts on Passphrase');
     assert.equal(restored.vaults.every(vault => !vault.unlocked), true);
-    assert.equal(restored.session, null);
+    assert.deepEqual(restored.session.connections, {});
     assert.equal((await api('/api/settings')).appearance, 'dark');
     await api('/api/vault/unlock', { name: 'work', passphrase: passphrases.work });
     assert.equal((await api('/api/state')).vaults.find(vault => vault.name === 'personal').unlocked, false);

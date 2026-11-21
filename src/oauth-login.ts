@@ -37,32 +37,14 @@ import {
   loadVault,
   saveVault,
   validateConnection,
+  validateOAuthConsent,
 } from "./vault.js";
 
 const MAX_DEFINITION_BYTES = 64 * 1024;
-const MAX_ENDPOINT_BYTES = 2_048;
-const MAX_AUTHORIZATION_PARAMETERS = 32;
-const MAX_PARAMETER_NAME_BYTES = 128;
-const MAX_PARAMETER_VALUE_BYTES = 4_096;
 const MAX_AUTHORIZATION_URL_BYTES = 16 * 1024;
 const MAX_CALLBACK_URL_BYTES = 8 * 1024;
 const CALLBACK_PATH = "/oauth/callback";
 const LOGIN_TIMEOUT_MS = 5 * 60 * 1_000;
-const PARAMETER_NAME = /^[A-Za-z0-9._~-]+$/u;
-const PROTECTED_AUTHORIZATION_PARAMETERS = new Set([
-  "audience",
-  "client_id",
-  "code_challenge",
-  "code_challenge_method",
-  "redirect_uri",
-  "resource",
-  "request",
-  "request_uri",
-  "response_mode",
-  "response_type",
-  "scope",
-  "state",
-]);
 
 export interface OAuthLoginDefinition {
   issuer: string;
@@ -96,84 +78,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
-function hasControls(value: string): boolean {
-  return /[\u0000-\u001f\u007f]/u.test(value);
-}
-
 function byteLength(value: string): number {
   return Buffer.byteLength(value, "utf8");
-}
-
-function fixedHttpsUrl(value: unknown, allowQuery: boolean): string {
-  if (
-    typeof value !== "string" ||
-    value.length === 0 ||
-    value.trim() !== value ||
-    byteLength(value) > MAX_ENDPOINT_BYTES ||
-    hasControls(value)
-  ) {
-    throw new BlindDropError("INVALID_INPUT");
-  }
-
-  let parsed: URL;
-  try {
-    parsed = new URL(value);
-  } catch {
-    throw new BlindDropError("INVALID_INPUT");
-  }
-  if (
-    parsed.protocol !== "https:" ||
-    parsed.username !== "" ||
-    parsed.password !== "" ||
-    parsed.hash !== "" ||
-    (!allowQuery && parsed.search !== "") ||
-    parsed.origin === "null"
-  ) {
-    throw new BlindDropError("INVALID_INPUT");
-  }
-  // OAuth issuer identifiers use exact string comparison (RFC 9207).
-  // In particular, adding a trailing slash can change the issuer identity.
-  return value;
-}
-
-function authorizationParameters(value: unknown): Record<string, string> {
-  if (value === undefined) {
-    return Object.create(null) as Record<string, string>;
-  }
-  if (!isRecord(value)) {
-    throw new BlindDropError("INVALID_INPUT");
-  }
-
-  const entries = Object.entries(value);
-  if (entries.length > MAX_AUTHORIZATION_PARAMETERS) {
-    throw new BlindDropError("INVALID_INPUT");
-  }
-  const result = Object.create(null) as Record<string, string>;
-  for (const [name, entry] of entries) {
-    if (
-      byteLength(name) === 0 ||
-      byteLength(name) > MAX_PARAMETER_NAME_BYTES ||
-      !PARAMETER_NAME.test(name) ||
-      PROTECTED_AUTHORIZATION_PARAMETERS.has(name.toLowerCase()) ||
-      typeof entry !== "string" ||
-      byteLength(entry) > MAX_PARAMETER_VALUE_BYTES ||
-      hasControls(entry)
-    ) {
-      throw new BlindDropError("INVALID_INPUT");
-    }
-    result[name] = entry;
-  }
-  return result;
-}
-
-function redirectPort(value: unknown): number {
-  if (value === undefined || value === 0) {
-    return 0;
-  }
-  if (!Number.isSafeInteger(value) || (value as number) < 1 || (value as number) > 65_535) {
-    throw new BlindDropError("INVALID_INPUT");
-  }
-  return value as number;
 }
 
 function readDefinitionFile(path: string): unknown {
@@ -239,8 +145,15 @@ export function readOAuthLoginDefinition(path: string): OAuthLoginDefinition {
     throw new BlindDropError("INVALID_INPUT");
   }
 
-  const issuer = fixedHttpsUrl(input.issuer, false);
-  const endpoint = fixedHttpsUrl(input.authorizationEndpoint, false);
+  // The same consent rules as a stored connection's `consent` (src/vault.ts):
+  // exact HTTPS issuer and endpoint strings, bounded parameters that cannot
+  // override generated protocol fields, and a loopback port.
+  const consent = validateOAuthConsent({
+    issuer: input.issuer,
+    authorizationEndpoint: input.authorizationEndpoint,
+    authorizationParameters: input.authorizationParameters,
+    redirectPort: input.redirectPort,
+  });
   const connection = validateConnection(input.connection);
   if (
     connection.auth.type !== "oauth2" ||
@@ -250,6 +163,7 @@ export function readOAuthLoginDefinition(path: string): OAuthLoginDefinition {
     throw new BlindDropError("INVALID_INPUT");
   }
   const overwrittenReferences = [
+    connection.auth.clientIdSecret,
     connection.auth.clientSecret,
     connection.tls?.certificateSecret,
     connection.tls?.privateKeySecret,
@@ -260,10 +174,14 @@ export function readOAuthLoginDefinition(path: string): OAuthLoginDefinition {
   }
 
   return {
-    issuer,
-    authorizationEndpoint: endpoint,
-    redirectPort: redirectPort(input.redirectPort),
-    authorizationParameters: authorizationParameters(input.authorizationParameters),
+    issuer: consent.issuer,
+    authorizationEndpoint: consent.authorizationEndpoint,
+    // Absent (or zero) selects any free loopback port.
+    redirectPort: consent.redirectPort || 0,
+    authorizationParameters: Object.assign(
+      Object.create(null) as Record<string, string>,
+      consent.authorizationParameters,
+    ),
     connection: connection as OAuthLoginDefinition["connection"],
   };
 }
@@ -301,6 +219,9 @@ function writeRefreshToken(vault: VaultData, reference: string, value: string): 
 
 function validateExistingReferences(vault: VaultData, connection: OAuthLoginDefinition["connection"]): void {
   const auth = connection.auth;
+  if (auth.clientIdSecret !== undefined) {
+    requireSecret(vault, auth.clientIdSecret);
+  }
   if (auth.clientSecret !== undefined) {
     requireSecret(vault, auth.clientSecret);
   }
@@ -324,23 +245,6 @@ function clientTls(vault: VaultData, connection: OAuthLoginDefinition["connectio
       ? {}
       : { passphrase: requireSecret(vault, connection.tls.passphraseSecret) }),
   };
-}
-
-function clientAuthentication(
-  vault: VaultData,
-  auth: OAuthLoginDefinition["connection"]["auth"],
-): oauth.ClientAuth {
-  switch (auth.clientAuth) {
-    case "basic":
-      if (auth.clientSecret === undefined) throw new BlindDropError("INVALID_INPUT");
-      return oauth.ClientSecretBasic(requireSecret(vault, auth.clientSecret));
-    case "body":
-      if (auth.clientSecret === undefined) throw new BlindDropError("INVALID_INPUT");
-      return oauth.ClientSecretPost(requireSecret(vault, auth.clientSecret));
-    case "none":
-      if (auth.clientSecret !== undefined) throw new BlindDropError("INVALID_INPUT");
-      return oauth.None();
-  }
 }
 
 function sendCallbackResponse(response: ServerResponse, status: number, body: string): void {
@@ -438,7 +342,7 @@ async function callbackListener(port: number, signal: AbortSignal): Promise<Call
 
   try {
     await new Promise<void>((resolve, reject) => {
-      const onError = () => reject(new BlindDropError("INPUT_UNAVAILABLE"));
+      const onError = () => reject(new BlindDropError("PORT_UNAVAILABLE"));
       server.once("error", onError);
       server.listen(port, "127.0.0.1", () => {
         server.removeListener("error", onError);
@@ -484,7 +388,7 @@ function linkedController(parent: AbortSignal | undefined, timeoutMs: number): {
   };
 }
 
-function targetParameters(auth: OAuthLoginDefinition["connection"]["auth"]): URLSearchParams {
+function targetParameters(auth: Extract<Connection["auth"], { type: "oauth2" }>): URLSearchParams {
   const parameters = new URLSearchParams();
   if (auth.scope !== undefined) parameters.set("scope", auth.scope);
   if (auth.audience !== undefined) parameters.set("audience", auth.audience);
@@ -494,6 +398,7 @@ function targetParameters(auth: OAuthLoginDefinition["connection"]["auth"]): URL
 
 function authorizationUrl(
   definition: OAuthLoginDefinition,
+  clientId: string,
   redirectUri: string,
   state: string,
   challenge: string,
@@ -505,7 +410,7 @@ function authorizationUrl(
   for (const [name, value] of targetParameters(definition.connection.auth)) {
     url.searchParams.set(name, value);
   }
-  url.searchParams.set("client_id", definition.connection.auth.clientId);
+  url.searchParams.set("client_id", clientId);
   url.searchParams.set("response_type", "code");
   url.searchParams.set("redirect_uri", redirectUri);
   url.searchParams.set("state", state);
@@ -531,27 +436,80 @@ export async function openSystemBrowser(url: string, signal: AbortSignal): Promi
   }
 }
 
-export async function oauthLogin(options: OAuthLoginOptions): Promise<void> {
-  const initial = loadVault(options.vaultPath, options.passphrase);
-  validateExistingReferences(initial, options.definition.connection);
-  const login = linkedController(options.signal, LOGIN_TIMEOUT_MS);
+export interface RefreshGrantRequest {
+  issuer: string;
+  authorizationEndpoint: string;
+  /** 0 selects any free loopback port. */
+  redirectPort: number;
+  authorizationParameters: Record<string, string>;
+  /** A validated OAuth refresh-grant connection: token endpoint, targets, client authentication. */
+  connection: Connection;
+  /** The resolved client id and secret; the caller owns where they are stored. */
+  clientId: string;
+  clientSecret?: string;
+  tls?: ClientTls;
+  signal?: AbortSignal;
+  visitAuthorizationUrl(url: string, signal: AbortSignal): Promise<void>;
+  /** Called once with the bound loopback callback URI, before the browser opens. */
+  onListening?(redirectUri: string): void;
+}
+
+function grantClientAuthentication(
+  auth: Extract<Connection["auth"], { type: "oauth2" }>,
+  clientSecret: string | undefined,
+): oauth.ClientAuth {
+  switch (auth.clientAuth) {
+    case "basic":
+      if (clientSecret === undefined) throw new BlindDropError("INVALID_INPUT");
+      return oauth.ClientSecretBasic(clientSecret);
+    case "body":
+      if (clientSecret === undefined) throw new BlindDropError("INVALID_INPUT");
+      return oauth.ClientSecretPost(clientSecret);
+    case "none":
+      if (clientSecret !== undefined) throw new BlindDropError("INVALID_INPUT");
+      return oauth.None();
+  }
+}
+
+/**
+ * Runs one owner consent: loopback listener, PKCE/state, browser, callback
+ * validation and code exchange. Writes nothing; the caller stores the returned
+ * refresh token. Abort or the five-minute limit ends the attempt, and the
+ * listener is closed on every path, so a late callback is never accepted.
+ */
+export async function obtainRefreshGrant(request: RefreshGrantRequest): Promise<{ refreshToken: string }> {
+  const connection = request.connection;
+  if (connection.auth.type !== "oauth2" || connection.auth.grant !== "refresh_token") {
+    throw new BlindDropError("INVALID_INPUT");
+  }
+  const auth = connection.auth;
+  const clientAuthentication = grantClientAuthentication(auth, request.clientSecret);
+  const definition = {
+    issuer: request.issuer,
+    authorizationEndpoint: request.authorizationEndpoint,
+    redirectPort: request.redirectPort,
+    authorizationParameters: request.authorizationParameters,
+    connection,
+  } as OAuthLoginDefinition;
+  const login = linkedController(request.signal, LOGIN_TIMEOUT_MS);
   let listener: CallbackListener | undefined;
 
   try {
-    listener = await callbackListener(options.definition.redirectPort, login.signal);
+    listener = await callbackListener(request.redirectPort, login.signal);
+    request.onListening?.(listener.redirectUri);
     const codeVerifier = oauth.generateRandomCodeVerifier();
     const challenge = await oauth.calculatePKCECodeChallenge(codeVerifier);
     const state = oauth.generateRandomState();
-    const url = authorizationUrl(options.definition, listener.redirectUri, state, challenge);
-    await options.visitAuthorizationUrl(url.href, login.signal);
+    const url = authorizationUrl(definition, request.clientId, listener.redirectUri, state, challenge);
+    await request.visitAuthorizationUrl(url.href, login.signal);
     const callbackUrl = await listener.response;
 
     const as: oauth.AuthorizationServer = {
-      issuer: options.definition.issuer,
-      authorization_endpoint: options.definition.authorizationEndpoint,
-      token_endpoint: options.definition.connection.auth.tokenEndpoint,
+      issuer: request.issuer,
+      authorization_endpoint: request.authorizationEndpoint,
+      token_endpoint: auth.tokenEndpoint,
     };
-    const client: oauth.Client = { client_id: options.definition.connection.auth.clientId };
+    const client: oauth.Client = { client_id: request.clientId };
     let callbackParameters: URLSearchParams;
     try {
       callbackParameters = oauth.validateAuthResponse(as, client, callbackUrl, state);
@@ -562,30 +520,32 @@ export async function oauthLogin(options: OAuthLoginOptions): Promise<void> {
     const token = linkedController(login.signal, DEFAULT_LIMITS.timeoutMs);
     let result: oauth.TokenEndpointResponse;
     try {
-      const endpoint = new URL(options.definition.connection.auth.tokenEndpoint);
-      const additional = targetParameters(options.definition.connection.auth);
+      const endpoint = new URL(auth.tokenEndpoint);
+      const additional = targetParameters(auth);
       const response = await oauth.authorizationCodeGrantRequest(
         as,
         client,
-        clientAuthentication(initial, options.definition.connection.auth),
+        clientAuthentication,
         callbackParameters,
         listener.redirectUri,
         codeVerifier,
         {
           ...createOAuthTokenRequestOptions(
             endpoint,
-            options.definition.connection,
+            connection,
             sendHttps,
             token.signal,
             DEFAULT_LIMITS,
-            clientTls(initial, options.definition.connection),
+            request.tls,
           ),
           additionalParameters: additional.size === 0 ? undefined : additional,
         },
       );
       result = await oauth.processAuthorizationCodeResponse(as, client, response);
     } catch (error) {
-      if (error instanceof BlindDropError) throw error;
+      // UNSUPPORTED_RESPONSE from this function means only a missing refresh
+      // token (below); a response the transport cannot decode is an upstream failure.
+      if (error instanceof BlindDropError && error.code !== "UNSUPPORTED_RESPONSE") throw error;
       throw new BlindDropError("UPSTREAM_ERROR");
     } finally {
       token.close();
@@ -594,21 +554,49 @@ export async function oauthLogin(options: OAuthLoginOptions): Promise<void> {
     if (
       result.token_type !== "bearer" ||
       typeof result.access_token !== "string" ||
-      result.access_token.length === 0 ||
-      typeof result.refresh_token !== "string" ||
-      result.refresh_token.length === 0
+      result.access_token.length === 0
     ) {
       throw new BlindDropError("UPSTREAM_ERROR");
     }
-
+    // A provider can grant access without a refresh token (GitHub without
+    // expiring user tokens). That grant cannot be kept; the fix is the
+    // client's offline-access setting, not another attempt.
+    if (typeof result.refresh_token !== "string" || result.refresh_token.length === 0) {
+      throw new BlindDropError("UNSUPPORTED_RESPONSE");
+    }
     if (login.signal.aborted) throw callbackError(login.signal);
-    const latest = loadVault(options.vaultPath, options.passphrase);
-    validateExistingReferences(latest, options.definition.connection);
-    writeRefreshToken(latest, options.definition.connection.auth.refreshSecret, result.refresh_token);
-    saveVault(options.vaultPath, latest, options.passphrase);
-    importConnection(options.vaultPath, options.passphrase, options.name, options.definition.connection);
+    return { refreshToken: result.refresh_token };
   } finally {
     login.close();
     await listener?.close();
   }
+}
+
+export async function oauthLogin(options: OAuthLoginOptions): Promise<void> {
+  const initial = loadVault(options.vaultPath, options.passphrase);
+  validateExistingReferences(initial, options.definition.connection);
+  const auth = options.definition.connection.auth;
+  const clientId = auth.clientIdSecret === undefined ? auth.clientId : requireSecret(initial, auth.clientIdSecret);
+  if (clientId === undefined) throw new BlindDropError("INVALID_INPUT");
+  const { refreshToken } = await obtainRefreshGrant({
+    issuer: options.definition.issuer,
+    authorizationEndpoint: options.definition.authorizationEndpoint,
+    redirectPort: options.definition.redirectPort,
+    authorizationParameters: options.definition.authorizationParameters,
+    connection: options.definition.connection,
+    clientId,
+    ...(auth.clientSecret === undefined ? {} : { clientSecret: requireSecret(initial, auth.clientSecret) }),
+    tls: clientTls(initial, options.definition.connection),
+    signal: options.signal,
+    visitAuthorizationUrl: options.visitAuthorizationUrl,
+  });
+
+  if (options.signal?.aborted) {
+    throw options.signal.reason instanceof BlindDropError ? options.signal.reason : new BlindDropError("SESSION_CLOSED");
+  }
+  const latest = loadVault(options.vaultPath, options.passphrase);
+  validateExistingReferences(latest, options.definition.connection);
+  writeRefreshToken(latest, options.definition.connection.auth.refreshSecret, refreshToken);
+  saveVault(options.vaultPath, latest, options.passphrase);
+  importConnection(options.vaultPath, options.passphrase, options.name, options.definition.connection);
 }

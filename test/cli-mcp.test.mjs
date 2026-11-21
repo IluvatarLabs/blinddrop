@@ -313,7 +313,7 @@ test("real owner CLI and MCP session keep credentials out of the agent interface
   const tools = await session.client.listTools();
   assert.deepEqual(
     tools.tools.map((tool) => tool.name).sort(),
-    ["execute_http", "list_connections"]
+    ["execute_http", "invoke_modal_function", "list_connections"]
   );
   assert.equal(JSON.stringify(tools).includes(replacementSecret), false);
 
@@ -322,9 +322,17 @@ test("real owner CLI and MCP session keep credentials out of the agent interface
     arguments: {}
   });
   assert.equal(connections.isError, undefined);
-  assert.deepEqual(connections.structuredContent, {
-    connections: [{ name: "fixture-api", origin: fixture.origin, authType: "bearer" }]
-  });
+  // Identity plus generic guidance; the exact key set keeps references and
+  // stored values out of the listing.
+  assert.deepEqual(
+    connections.structuredContent.connections.map(({ name, origin, authType, recipe, tool }) =>
+      ({ name, origin, authType, recipe, tool })),
+    [{ name: "fixture-api", origin: fixture.origin, authType: "bearer", recipe: null, tool: "execute_http" }]
+  );
+  assert.deepEqual(
+    Object.keys(connections.structuredContent.connections[0]).sort(),
+    ["authType", "available", "example", "name", "notes", "origin", "recipe", "schematic", "summary", "tool"]
+  );
   assert.equal(textContent(connections).includes(replacementSecret), false);
 
   const authorized = await session.client.callTool({

@@ -328,7 +328,8 @@ async function main() {
       assert.equal(eventLog.includes(value), false);
     }
     // Reuse actual owner/HTTP/SDK workflows against this installed executable.
-    // The SDK and controller remain development consumers, not runtime dependencies.
+    // The Anthropic SDK remains a development consumer, not a runtime dependency;
+    // the MCP client controlling these sessions is also `blinddrop agent`'s runtime client.
     await run(process.execPath, [
       "--test", "--test-concurrency=1",
       join(projectRoot, "test/passwd.test.mjs"),

@@ -410,7 +410,7 @@ for (const [mode, expectedCode, expectedTokenRequests] of [
   ["redirect-mismatch", "INVALID_INPUT", 0],
   ["wrong-verifier", "UPSTREAM_ERROR", 1],
   ["denied", "UPSTREAM_ERROR", 0],
-  ["missing-refresh", "UPSTREAM_ERROR", 1],
+  ["missing-refresh", "UNSUPPORTED_RESPONSE", 1],
 ]) {
   test(`OAuth ${mode} fails statically without saving or dispatching a resource request`, { timeout: 30_000 }, async (t) => {
     const local = await initializedOwner(t, mode);
@@ -425,7 +425,9 @@ for (const [mode, expectedCode, expectedTokenRequests] of [
     assert.equal(stderr, `${expectedCode}: ${
       expectedCode === "INVALID_INPUT"
         ? "Invalid input."
-        : "The upstream request failed. Its outcome may be unknown."
+        : expectedCode === "UNSUPPORTED_RESPONSE"
+          ? "The upstream response cannot be handled safely."
+          : "The upstream request failed. Its outcome may be unknown."
     }\n`);
     assert.equal((await readFile(local.vault)).equals(before), true);
     const stored = loadVault(local.vault, local.passphrase);

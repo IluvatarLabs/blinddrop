@@ -289,7 +289,7 @@ export interface FieldInput {
 }
 
 /** An `.env` line becomes an api-key secret with a single `token` field, the
- *  archetype's default field (research 6.1); a bare reference resolves to it. */
+ *  archetype's default field; a bare reference resolves to it. */
 function tokenSecret(value: string): Secret {
   return {
     type: "api-key",
@@ -354,15 +354,28 @@ function applyTypedSecrets(vault: VaultData, secrets: Record<string, TypedSecret
   }
 }
 
+/**
+ * The owner page's secret save. Stored fields the request neither lists nor
+ * names in `remove` are kept, so a field written after the page loaded (an
+ * OAuth grant from Save and connect) survives a save from an older view.
+ */
 export function setSecretTyped(
   vaultPath: string,
   passphrase: string,
   name: string,
   type: string,
   fields: Record<string, FieldInput>,
+  remove: readonly string[] = [],
 ): void {
   const vault = loadVault(vaultPath, passphrase);
-  applyTypedSecret(vault, name, { type, fields });
+  const merged: Record<string, FieldInput> = { ...fields };
+  const existing = Object.hasOwn(vault.secrets, name) ? vault.secrets[name] : undefined;
+  for (const [id, field] of Object.entries(existing?.fields ?? {})) {
+    if (!Object.hasOwn(merged, id) && !remove.includes(id)) {
+      merged[id] = { label: field.label, masked: field.masked, multiline: field.multiline };
+    }
+  }
+  applyTypedSecret(vault, name, { type, fields: merged });
   saveVault(vaultPath, vault, passphrase);
 }
 

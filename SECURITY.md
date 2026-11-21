@@ -37,3 +37,10 @@ defeat arbitrary transformations by a malicious recipient, and they do not
 prevent misuse of an authorized API action. Streaming responses release
 checked bytes incrementally; a later failure truncates delivery but cannot
 recall bytes already delivered.
+
+In the Mac app, a vault set to Touch ID or Without asking keeps its passphrase
+sealed with a key the macOS Keychain releases to the app; in the unsigned build
+any program running the same unmodified Electron release can obtain it. A
+Without asking vault opens for any agent's call while Agent access is on; an
+agent's call through the app's integration starts the app when it is not
+running.

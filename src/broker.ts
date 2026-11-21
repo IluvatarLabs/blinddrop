@@ -10,6 +10,8 @@ import { TextDecoder } from "node:util";
 
 import { AuthSession } from "./auth.js";
 import { BlindDropError, type ErrorCode } from "./errors.js";
+import { ModalClients } from "./modal.js";
+import { connectionGuidance } from "./recipes.js";
 import {
   connectionResolvable,
   normalizeSnapshot,
@@ -22,10 +24,13 @@ import type {
   ClientTls,
   Connection,
   ConnectionMetadata,
+  ConnectionTool,
   ExecuteOptions,
   Grant,
   HttpResult,
   Limits,
+  ModalInvokeInput,
+  ModalInvokeResult,
   PersistSecret,
   PreparedRequest,
   RequestInput,
@@ -104,10 +109,18 @@ const STRIPPED_RESPONSE_HEADERS = new Set([
 const MAX_MULTIPART_NAME_BYTES = 256;
 const MAX_MULTIPART_FILENAME_BYTES = 1024;
 const MAX_MULTIPART_CONTENT_TYPE_BYTES = 256;
+const MAX_JSON_DEPTH = 64;
 
 interface ActiveRequest {
   controller: AbortController;
   httpStatus: number | null;
+  /** Epoch milliseconds: the earlier of grant expiry and the operation limit. */
+  deadline: number;
+}
+
+interface ModalArguments {
+  args: unknown[];
+  kwargs: Record<string, unknown>;
 }
 
 interface UseEvent {
@@ -117,6 +130,8 @@ interface UseEvent {
   outcome: "success" | "denied" | "blocked" | "failed";
   code: ErrorCode | null;
   httpStatus: number | null;
+  /** The agent operation; the SDK base-URL route counts as execute_http. */
+  tool: ConnectionTool;
 }
 
 interface EncodedBody {
@@ -247,16 +262,56 @@ function bufferContains(patterns: readonly string[], value: Buffer): boolean {
   );
 }
 
+/**
+ * JSON data only: null, booleans, finite numbers, strings, arrays and plain
+ * objects, nested at most MAX_JSON_DEPTH containers deep.
+ */
+function isJsonValue(value: unknown, depth = 0): boolean {
+  switch (typeof value) {
+    case "string":
+    case "boolean":
+      return true;
+    case "number":
+      return Number.isFinite(value);
+    case "object":
+      break;
+    default:
+      return false;
+  }
+  if (value === null) {
+    return true;
+  }
+  if (depth >= MAX_JSON_DEPTH) {
+    return false;
+  }
+  if (Array.isArray(value)) {
+    return value.every((entry) => isJsonValue(entry, depth + 1));
+  }
+  const prototype: unknown = Object.getPrototypeOf(value);
+  return (prototype === Object.prototype || prototype === null) &&
+    Object.values(value).every((entry) => isJsonValue(entry, depth + 1));
+}
+
+/** A pattern as it appears raw and inside a serialized JSON string. */
+function jsonTextPatterns(patterns: readonly string[]): string[] {
+  return [...new Set(patterns.flatMap((pattern) => [
+    pattern,
+    JSON.stringify(pattern).slice(1, -1),
+  ]))];
+}
+
 function errorOutcome(code: ErrorCode): UseEvent["outcome"] {
   if (code === "RESPONSE_BLOCKED") {
     return "blocked";
   }
   if (
     code === "ACCESS_DENIED" ||
+    code === "UNSUPPORTED_OPERATION" ||
     code === "SESSION_EXPIRED" ||
     code === "SESSION_CLOSED" ||
     code === "CONNECTION_NOT_FOUND" ||
     code === "SECRET_NOT_FOUND" ||
+    code === "SECRET_INVALID" ||
     code === "DESTINATION_DENIED" ||
     code === "INVALID_INPUT" ||
     code === "BUSY"
@@ -317,6 +372,7 @@ export class Broker {
   private readonly active = new Set<ActiveRequest>();
   private readonly grantId: string;
   private readonly auth: AuthSession;
+  private readonly modal = new ModalClients();
   private logFd: number | null;
   private closed = false;
 
@@ -380,7 +436,13 @@ export class Broker {
       if (!connection?.enabled || !this.connectionSecretsEnabled(connection)) {
         return [];
       }
-      return [{ name, origin: connection.origin, authType: connection.auth.type }];
+      return [{
+        name,
+        origin: connection.origin,
+        authType: connection.auth.type,
+        ...connectionGuidance(name, connection),
+        available: true,
+      }];
     });
   }
 
@@ -390,9 +452,11 @@ export class Broker {
   ): Promise<HttpResult> {
     const extraPatterns = this.normalizeExtraPatterns(options.extraPatterns);
     return this.executeOperation(
-      input,
+      input?.connection,
+      "execute_http",
       this.limits,
       options.signal,
+      () => this.validateInputShape(input),
       (connection, active) => this.executeActive(
         input,
         connection,
@@ -410,9 +474,11 @@ export class Broker {
   ): Promise<void> {
     const extraPatterns = this.normalizeExtraPatterns(options.extraPatterns);
     return this.executeOperation(
-      input,
+      input?.connection,
+      "execute_http",
       this.streamLimits,
       options.signal,
+      () => this.validateInputShape(input),
       (connection, active) => this.executeStreamingActive(
         input,
         connection,
@@ -423,25 +489,71 @@ export class Broker {
     );
   }
 
-  private async executeOperation<T>(
-    input: RequestInput,
+  /**
+   * Invokes the owner-selected Function of a Modal connection with bounded
+   * JSON arguments, under the buffered operation's limits and accounting.
+   */
+  async invokeModal(
+    input: ModalInvokeInput,
+    options: ExecuteOptions = {},
+  ): Promise<ModalInvokeResult> {
+    const extraPatterns = this.normalizeExtraPatterns(options.extraPatterns);
+    return this.executeOperation(
+      input?.connection,
+      "invoke_modal_function",
+      this.limits,
+      options.signal,
+      () => this.modalArguments(input, extraPatterns),
+      (connection, active, prepared) => this.invokeModalActive(
+        input.connection,
+        connection,
+        active,
+        prepared,
+        extraPatterns,
+      ),
+    );
+  }
+
+  /**
+   * Shared accounting for every agent operation: session and input checks,
+   * authorization, the per-connection tool, the concurrency cap, the deadline,
+   * external cancellation and one use event.
+   */
+  private async executeOperation<P, T>(
+    connectionName: unknown,
+    tool: ConnectionTool,
     limits: Limits,
     externalSignal: AbortSignal | undefined,
+    validate: () => P,
     operation: (
       connection: Connection,
       active: ActiveRequest,
+      prepared: P,
     ) => Promise<T>,
   ): Promise<T> {
-    const knownConnection = this.knownConnectionName(input?.connection);
+    const knownConnection = this.knownConnectionName(connectionName);
     try {
       this.assertSession();
-      this.validateInputShape(input);
-      const connection = this.authorizedConnection(input.connection);
+      const prepared = validate();
+      // Every validator has already required a string connection name.
+      const connection = this.authorizedConnection(connectionName as string);
+      // A Modal connection serves only its SDK operation, and no other
+      // connection serves it; refuse before any credential is resolved.
+      if ((connection.auth.type === "modal") !== (tool === "invoke_modal_function")) {
+        throw new BlindDropError("UNSUPPORTED_OPERATION");
+      }
       if (this.active.size >= limits.concurrency) {
         throw new BlindDropError("BUSY");
       }
 
-      const active: ActiveRequest = { controller: new AbortController(), httpStatus: null };
+      const grantExpiry = this.requireGrant().expiresAt;
+      const timeoutAt = Date.now() + limits.timeoutMs;
+      const deadline = Math.min(grantExpiry, timeoutAt);
+      const active: ActiveRequest = {
+        controller: new AbortController(),
+        httpStatus: null,
+        deadline,
+      };
       this.active.add(active);
       const onExternalAbort = (): void => {
         active.controller.abort(
@@ -455,9 +567,6 @@ export class Broker {
       } else {
         externalSignal?.addEventListener("abort", onExternalAbort, { once: true });
       }
-      const grantExpiry = this.requireGrant().expiresAt;
-      const timeoutAt = Date.now() + limits.timeoutMs;
-      const deadline = Math.min(grantExpiry, timeoutAt);
       const timer = setTimeout(() => {
         const code = deadline === grantExpiry ? "SESSION_EXPIRED" : "TIMEOUT";
         active.controller.abort(new BlindDropError(code));
@@ -465,8 +574,8 @@ export class Broker {
       timer.unref();
 
       try {
-        const result = await operation(connection, active);
-        this.writeUseEvent(knownConnection, "success", null, active.httpStatus);
+        const result = await operation(connection, active, prepared);
+        this.writeUseEvent(knownConnection, tool, "success", null, active.httpStatus);
         return result;
       } finally {
         clearTimeout(timer);
@@ -477,7 +586,7 @@ export class Broker {
       const safe = error instanceof BlindDropError
         ? error
         : new BlindDropError("INTERNAL_ERROR");
-      this.writeUseEvent(knownConnection, errorOutcome(safe.code), safe.code, null);
+      this.writeUseEvent(knownConnection, tool, errorOutcome(safe.code), safe.code, null);
       throw safe;
     }
   }
@@ -492,6 +601,7 @@ export class Broker {
     }
     this.active.clear();
     this.auth.close();
+    this.modal.close();
 
     if (this.snapshot) {
       for (const vault of this.snapshot.vaults.values()) {
@@ -605,6 +715,97 @@ export class Broker {
     this.assertActive(active);
     this.assertSession();
     this.authorizedConnection(input.connection);
+  }
+
+  private async invokeModalActive(
+    name: string,
+    connection: Connection,
+    active: ActiveRequest,
+    input: ModalArguments,
+    extraPatterns: readonly string[],
+  ): Promise<ModalInvokeResult> {
+    const target = connection.modal;
+    if (target === undefined) {
+      throw new BlindDropError("INVALID_INPUT");
+    }
+    this.assertActive(active);
+    const credentials = this.auth.modalCredentials(connection);
+    const value = await this.modal.invoke(name, {
+      tokenId: credentials.tokenId,
+      tokenSecret: credentials.tokenSecret,
+      target,
+      args: input.args,
+      kwargs: input.kwargs,
+      signal: active.controller.signal,
+      deadline: active.deadline,
+    });
+    // A lock, expiry or revocation during the wait discards a late result.
+    this.assertActive(active);
+    this.assertSession();
+    this.authorizedConnection(name);
+    return {
+      result: this.releaseModalResult(value, [...credentials.patterns, ...extraPatterns]),
+    };
+  }
+
+  /**
+   * Validates the agent's Function arguments and returns a fresh JSON copy:
+   * an optional array and an optional plain object of JSON data, bounded by
+   * the buffered request limit, never carrying the session token.
+   */
+  private modalArguments(
+    input: ModalInvokeInput,
+    extraPatterns: readonly string[],
+  ): ModalArguments {
+    if (
+      !isRecord(input) ||
+      Object.keys(input).some(
+        (key) => key !== "connection" && key !== "args" && key !== "kwargs",
+      ) ||
+      typeof input.connection !== "string" ||
+      (input.args !== undefined && !Array.isArray(input.args)) ||
+      (input.kwargs !== undefined && !isRecord(input.kwargs))
+    ) {
+      throw new BlindDropError("INVALID_INPUT");
+    }
+    const args = input.args ?? [];
+    const kwargs = input.kwargs ?? {};
+    if (!isJsonValue(args) || !isJsonValue(kwargs)) {
+      throw new BlindDropError("INVALID_INPUT");
+    }
+    const serialized = JSON.stringify({ args, kwargs });
+    if (byteLength(serialized) > this.limits.requestBytes) {
+      throw new BlindDropError("REQUEST_TOO_LARGE");
+    }
+    if (responseContains(jsonTextPatterns(extraPatterns), [serialized])) {
+      throw new BlindDropError("ACCESS_DENIED");
+    }
+    return JSON.parse(serialized) as ModalArguments;
+  }
+
+  /**
+   * Buffers and inspects a complete Function result before release: JSON data
+   * only, within the buffered response limit, and free of every known
+   * credential and session pattern, raw or JSON-escaped.
+   */
+  private releaseModalResult(value: unknown, patterns: readonly string[]): unknown {
+    if (!isJsonValue(value)) {
+      throw new BlindDropError("UNSUPPORTED_RESPONSE");
+    }
+    let serialized: string;
+    try {
+      serialized = JSON.stringify(value);
+    } catch {
+      // Only an over-long serialization can fail after the JSON check.
+      throw new BlindDropError("RESPONSE_TOO_LARGE");
+    }
+    if (byteLength(serialized) > this.limits.responseBytes) {
+      throw new BlindDropError("RESPONSE_TOO_LARGE");
+    }
+    if (responseContains(jsonTextPatterns(patterns), [serialized])) {
+      throw new BlindDropError("RESPONSE_BLOCKED");
+    }
+    return JSON.parse(serialized) as unknown;
   }
 
   private async prepareActive(
@@ -1074,6 +1275,7 @@ export class Broker {
 
   private writeUseEvent(
     connection: string | null,
+    tool: ConnectionTool,
     outcome: UseEvent["outcome"],
     code: ErrorCode | null,
     httpStatus: number | null,
@@ -1088,6 +1290,7 @@ export class Broker {
       outcome,
       code,
       httpStatus,
+      tool,
     };
     try {
       writeSync(this.logFd, `${JSON.stringify(event)}\n`, undefined, "utf8");

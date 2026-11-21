@@ -8,7 +8,7 @@ Upstream: https://github.com/1clawAI/1claw-cli
 Commit: `5fa5e2c0af355f6d9530cea132668474a8c2acdf`.
 
 Source files: `src/local-vault.ts`, `src/local-policy.ts`, and `src/secret-proxy.ts`.
-Local adaptations: `src/vault.ts` retains the scrypt/AES-GCM envelope with BlindDrop's smaller validated payload and atomic filesystem writes; `src/broker.ts`, `src/auth.ts` and `src/transport.ts` retain explicit request execution and configurable authentication, adding the bounds and disclosure checks required by the MVP. Legacy cloud synchronization and vendor application features are omitted. The compatibility expansion factors the existing request transport for reuse by token exchanges; OAuth, JOSE and AWS signing are imported from their standard packages rather than copied from these reference checkouts.
+Local adaptations: `src/vault.ts` retains the scrypt/AES-GCM envelope with BlindDrop's smaller validated payload and atomic filesystem writes; `src/broker.ts`, `src/auth.ts` and `src/transport.ts` retain explicit request execution and configurable authentication, adding BlindDrop's bounds and disclosure checks. Legacy cloud synchronization and vendor application features are omitted. Token exchanges reuse the same request transport; OAuth, JOSE and AWS signing use their standard packages rather than copied code.
 
 ```text
 MIT License
@@ -82,3 +82,29 @@ functional verification and the example; it is not a BlindDrop runtime
 dependency. `cross-env` supplies the portable development test command.
 Exact versions and transitive dependencies are recorded in `package-lock.json`;
 installed packages retain their licenses.
+
+## 0.6.2 standard components
+
+Modal Function invocation uses `modal`, the official Modal JavaScript/TypeScript
+SDK, unmodified as a runtime dependency that is loaded only when a Modal
+connection is invoked. It is licensed under the Apache License 2.0; no Modal
+source was copied into BlindDrop. Its published npm package does not include a
+license file; the license text is in the upstream repository,
+https://github.com/modal-labs/modal-client (`LICENSE`; the 0.11.1 JavaScript
+release corresponds to commit `77e02e16a4deace19f20b35ad131b1fbeb8f4d4d`), and
+at https://www.apache.org/licenses/LICENSE-2.0. The exact version and its
+transitive dependencies are recorded in `package-lock.json`; those dependencies
+are governed by their own licenses.
+
+`blinddrop agent` forwards each tool call to the running app with the official
+MCP client, `@modelcontextprotocol/client` 2.0.0, used unmodified. It moves
+from a development consumer to a runtime dependency. Its package metadata
+declares the MIT license; its license file, the same one the
+`@modelcontextprotocol/server` runtime dependency carries, records the MCP
+project's transition from MIT to Apache-2.0. It brings these transitive runtime
+dependencies, previously development-only: `cross-spawn` 7.0.6,
+`eventsource` 3.0.7, `eventsource-parser` 3.1.1, `pkce-challenge` 5.0.1,
+`path-key` 3.1.1, `shebang-command` 2.0.0 and `shebang-regex` 3.0.0 (MIT), and
+`which` 2.0.2 and `isexe` 2.0.0 (ISC). No source was copied into BlindDrop. The
+exact versions are recorded in `package-lock.json`; installed packages retain
+their licenses.

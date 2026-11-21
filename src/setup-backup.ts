@@ -29,6 +29,7 @@ import {
   type GroupsMeta,
   type OwnerSettings,
 } from "./owner-files.js";
+import { QUICK_UNLOCK_FILE } from "./quick-unlock.js";
 import type { Connection, VaultRegistry } from "./types.js";
 import { loadStoredRegistry, registryPath, saveRegistry, validateVaultArchive } from "./vault.js";
 
@@ -255,21 +256,43 @@ function validateSetupFolder(sourcePath: string): ValidatedSetup {
   return { registry, connections, groups, settings, archives };
 }
 
-type RestoreDestination = "absent" | "empty" | "preferences";
+/**
+ * BlindDrop's own runtime entries, never part of a setup: the running app's
+ * agent session file, and the integrations folder hosts load the staged
+ * plugin from in place. Restore ignores and keeps them.
+ */
+const RUNTIME_ENTRIES = ["session.json", "integrations"];
+/**
+ * The Mac app's sealed Touch ID and Without asking passphrases, never part
+ * of a setup: backup's explicit file list leaves the file out, and restore
+ * ignores it in the destination and deletes it, so every restored vault starts
+ * on Passphrase.
+ */
+const DISCARDED_ENTRIES = [QUICK_UNLOCK_FILE];
+
+interface RestoreDestination {
+  state: "absent" | "empty" | "occupied";
+  /** Runtime entries present, moved into the restored folder. */
+  kept: string[];
+}
 
 /**
  * Restore remains a fresh-state operation. A first-use app may already have
  * written settings such as Appearance; that file is preference state, not a
- * vault setup, provided it carries no vault pointers and is the directory's
- * only entry.
+ * vault setup, provided it carries no vault pointers. Apart from the runtime
+ * and discarded entries it must be the directory's only entry.
  */
 function restoreDestination(configDir: string): RestoreDestination {
   try {
     const stat = lstatSync(configDir);
     if (!stat.isDirectory()) throw new BlindDropError("VAULT_EXISTS");
     const entries = readdirSync(configDir);
-    if (entries.length === 0) return "empty";
-    if (entries.length !== 1 || entries[0] !== basename(settingsPath(configDir))) {
+    const kept = entries.filter(entry => RUNTIME_ENTRIES.includes(entry)).sort();
+    const setup = entries.filter(entry => !RUNTIME_ENTRIES.includes(entry) && !DISCARDED_ENTRIES.includes(entry));
+    // A discarded entry makes the directory occupied: it is set aside with the
+    // displaced preferences and deleted with them.
+    if (setup.length === 0) return { state: entries.length === 0 ? "empty" : "occupied", kept };
+    if (setup.length !== 1 || setup[0] !== basename(settingsPath(configDir))) {
       throw new BlindDropError("VAULT_EXISTS");
     }
     requireRegularReadableFile(settingsPath(configDir));
@@ -277,20 +300,23 @@ function restoreDestination(configDir: string): RestoreDestination {
     if (settings.lastVault !== null || settings.recentVaults.length !== 0) {
       throw new BlindDropError("VAULT_EXISTS");
     }
-    return "preferences";
+    return { state: "occupied", kept };
   } catch (error) {
     if (error instanceof BlindDropError) throw error;
-    if (errorCode(error) === "ENOENT") return "absent";
+    if (errorCode(error) === "ENOENT") return { state: "absent", kept: [] };
     throw new BlindDropError("STORAGE_ERROR");
   }
 }
 
-/** Restores a validated folder into one empty app root and leaves every vault locked. */
+/**
+ * Restores a validated folder into one empty app root and leaves every vault
+ * locked. BlindDrop's runtime entries move into the restored folder.
+ */
 export function restoreSetup(configDir: string, sourcePath: string): SetupBackupResult {
   assertPath(configDir);
   const setup = validateSetupFolder(sourcePath);
   const destination = resolve(configDir);
-  const destinationState = restoreDestination(destination);
+  const { state: destinationState, kept } = restoreDestination(destination);
   try {
     mkdirSync(dirname(destination), { recursive: true, mode: 0o700 });
   } catch {
@@ -332,10 +358,11 @@ export function restoreSetup(configDir: string, sourcePath: string): SetupBackup
       ui: { ...setup.settings.ui },
     });
 
-    if (restoreDestination(destination) !== destinationState) {
+    const current = restoreDestination(destination);
+    if (current.state !== destinationState || current.kept.join("/") !== kept.join("/")) {
       throw new BlindDropError("VAULT_EXISTS");
     }
-    if (destinationState === "preferences") {
+    if (destinationState === "occupied") {
       renameSync(destination, rollback);
       displacedPreferences = true;
     } else if (destinationState === "empty") {
@@ -344,7 +371,12 @@ export function restoreSetup(configDir: string, sourcePath: string): SetupBackup
     }
     renameSync(stage, destination);
     published = true;
-    if (displacedPreferences) removeTree(rollback);
+    if (displacedPreferences) {
+      // Never deleted: a runtime entry that cannot move stays at the private
+      // rollback path, and the error is reported.
+      for (const entry of kept) renameSync(join(rollback, entry), join(destination, entry));
+      removeTree(rollback);
+    }
   } catch (error) {
     if (error instanceof BlindDropError) throw error;
     throw new BlindDropError("STORAGE_ERROR");

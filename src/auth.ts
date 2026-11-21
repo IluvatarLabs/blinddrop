@@ -73,7 +73,9 @@ function setHeader(headers: Record<string, string>, name: string, value: string)
     validateHeaderName(name);
     validateHeaderValue(name, value);
   } catch {
-    throw new BlindDropError("INVALID_INPUT");
+    // Every caller sets a connection-side value (a stored credential, a token
+    // issued for one, or a fixed content type), so the owner must fix it.
+    throw new BlindDropError("SECRET_INVALID");
   }
   deleteHeader(headers, name);
   headers[name] = value;
@@ -351,6 +353,23 @@ export class AuthSession {
     this.patterns.clear();
   }
 
+  /**
+   * Resolves a Modal connection's account token for the SDK. Both values
+   * become reflection patterns; `patterns` is the session's known set after
+   * resolution, as `prepare` returns for HTTP.
+   */
+  modalCredentials(connection: Connection): { tokenId: string; tokenSecret: string; patterns: string[] } {
+    if (this.closed) {
+      throw new BlindDropError("SESSION_CLOSED");
+    }
+    if (connection.auth.type !== "modal") {
+      throw new BlindDropError("UNSUPPORTED_OPERATION");
+    }
+    const tokenId = this.secret(connection.auth.tokenIdSecret);
+    const tokenSecret = this.secret(connection.auth.tokenSecretSecret);
+    return { tokenId, tokenSecret, patterns: [...this.patterns] };
+  }
+
   private secret(reference: string): string {
     const value = resolveValue(this.vaults, parseSecretRef(reference, this.defaultVault));
     if (value === undefined) {
@@ -441,6 +460,9 @@ export class AuthSession {
       case "aws-sigv4":
         await this.applyAws(auth, request);
         return;
+      case "modal":
+        // The Modal SDK owns that transport; it is never an HTTP credential.
+        throw new BlindDropError("UNSUPPORTED_OPERATION");
     }
   }
 
@@ -571,11 +593,16 @@ export class AuthSession {
     tls: ClientTls | undefined,
   ): Promise<TokenCache> {
     const endpoint = assertFixedHttpsEndpoint(auth.tokenEndpoint);
+    // A refresh response may carry an ID token, which the library checks
+    // against this issuer. The consent issuer is the provider's real one (for
+    // Google it is not the token endpoint's origin); without it, the origin.
     const as: oauth.AuthorizationServer = {
-      issuer: endpoint.origin,
+      issuer: connection.consent?.issuer ?? endpoint.origin,
       token_endpoint: endpoint.href,
     };
-    const client: oauth.Client = { client_id: auth.clientId };
+    const clientId = auth.clientIdSecret === undefined ? auth.clientId : this.secret(auth.clientIdSecret);
+    if (clientId === undefined) throw new BlindDropError("INVALID_INPUT");
+    const client: oauth.Client = { client_id: clientId };
     const clientSecret = auth.clientSecret === undefined ? undefined : this.secret(auth.clientSecret);
 
     let clientAuthentication: oauth.ClientAuth;
@@ -764,6 +791,14 @@ export class AuthSession {
     const sessionToken = auth.sessionTokenSecret === undefined
       ? undefined
       : this.secret(auth.sessionTokenSecret);
+
+    // The access key ID and session token travel in headers as stored.
+    try {
+      validateHeaderValue("authorization", accessKeyId);
+      if (sessionToken !== undefined) validateHeaderValue("x-amz-security-token", sessionToken);
+    } catch {
+      throw new BlindDropError("SECRET_INVALID");
+    }
 
     const headers: Record<string, string> = Object.create(null) as Record<string, string>;
     for (const [name, value] of Object.entries(request.headers)) {

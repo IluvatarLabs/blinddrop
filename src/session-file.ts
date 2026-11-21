@@ -1,7 +1,7 @@
 // The opt-in local endpoint file. It carries one running session's loopback
-// endpoint and its session token so an agent harness can find the session the
-// owner already started. It never carries vault unlock material, and it is
-// withdrawn as soon as that session ends.
+// endpoint and its session token so an agent integration can find the running
+// app's endpoint. It never carries vault unlock material, and it is withdrawn
+// as soon as that session ends.
 
 import { randomBytes } from "node:crypto";
 import {
@@ -9,12 +9,15 @@ import {
   fsyncSync,
   mkdirSync,
   openSync,
+  readFileSync,
   renameSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import process from "node:process";
+
+import { z } from "zod";
 
 import { BlindDropError } from "./errors.js";
 
@@ -24,6 +27,23 @@ export interface SessionFileContents {
   expiresAt: number;
   connections: Record<string, string>;
 }
+
+/** The token travels only to the loopback endpoint the file names. */
+const SessionFileSchema = z
+  .object({
+    mcpUrl: z.string().refine((value) => {
+      try {
+        const url = new URL(value);
+        return url.protocol === "http:" && url.hostname === "127.0.0.1" && url.pathname === "/mcp";
+      } catch {
+        return false;
+      }
+    }),
+    token: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
+    expiresAt: z.number(),
+    connections: z.record(z.string(), z.string()),
+  })
+  .strict();
 
 function assertPath(path: string): void {
   if (typeof path !== "string" || path.length === 0 || path.includes("\0")) {
@@ -102,5 +122,14 @@ export function deleteSessionFile(path: string): void {
       return;
     }
     throw new BlindDropError("STORAGE_ERROR");
+  }
+}
+
+/** The published session, or undefined when no readable session file exists. */
+export function readSessionFile(path: string): SessionFileContents | undefined {
+  try {
+    return SessionFileSchema.parse(JSON.parse(readFileSync(path, "utf8")));
+  } catch {
+    return undefined;
   }
 }

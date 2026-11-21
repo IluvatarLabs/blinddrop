@@ -43,14 +43,39 @@ export type Authentication =
   | { type: "header"; secret: string; name: string }
   | { type: "query"; secret: string; name: string }
   | { type: "bindings"; bindings: SecretBinding[] }
-  | { type: "oauth2"; tokenEndpoint: string; grant: "client_credentials" | "refresh_token"; clientId: string; clientSecret?: string; refreshSecret?: string; clientAuth: "basic" | "body" | "none"; scope?: string; audience?: string; resource?: string }
+  // Exactly one of the literal `clientId` or the vault reference `clientIdSecret`.
+  | { type: "oauth2"; tokenEndpoint: string; grant: "client_credentials" | "refresh_token"; clientId?: string; clientIdSecret?: string; clientSecret?: string; refreshSecret?: string; clientAuth: "basic" | "body" | "none"; scope?: string; audience?: string; resource?: string }
   | { type: "jwt-bearer"; tokenEndpoint: string; issuer: string; subject?: string; scope: string; privateKeySecret: string; keyId?: string }
-  | { type: "aws-sigv4"; accessKeyIdSecret: string; secretAccessKeySecret: string; sessionTokenSecret?: string; region: string; service: string };
+  | { type: "aws-sigv4"; accessKeyIdSecret: string; secretAccessKeySecret: string; sessionTokenSecret?: string; region: string; service: string }
+  // Modal account token used by the official SDK; never an HTTP credential.
+  | { type: "modal"; tokenIdSecret: string; tokenSecretSecret: string };
 
 export interface ClientTlsReferences {
   certificateSecret: string;
   privateKeySecret: string;
   passphraseSecret?: string;
+}
+
+/**
+ * Owner-only browser consent settings for an OAuth refresh-grant connection.
+ * The same shape as the `oauth login` definition. The broker reads only
+ * `issuer`, to check an ID token that a refresh response may carry.
+ */
+export interface OAuthConsent {
+  issuer: string;
+  authorizationEndpoint: string;
+  authorizationParameters?: Record<string, string>;
+  /** 0 or absent selects any free loopback port. */
+  redirectPort?: number;
+}
+
+/** The one deployed Modal Function a Modal connection may invoke. */
+export interface ModalTarget {
+  app: string;
+  function: string;
+  environment: string;
+  /** Optional owner-written description or example of the Function's arguments. */
+  usage?: string;
 }
 
 export interface Connection {
@@ -59,6 +84,12 @@ export interface Connection {
   allowPrivate: boolean;
   enabled: boolean;
   tls?: ClientTlsReferences;
+  /** Stable id of the bundled static recipe this connection was created from. */
+  recipe?: string;
+  /** Only with OAuth refresh-grant authentication. */
+  consent?: OAuthConsent;
+  /** Required with, and only with, Modal authentication. */
+  modal?: ModalTarget;
 }
 
 export interface VaultData {
@@ -94,10 +125,44 @@ export interface HttpResult {
   bodyEncoding?: "base64";
 }
 
-export interface ConnectionMetadata {
+export interface ModalInvokeInput {
+  connection: string;
+  args?: unknown[];
+  kwargs?: Record<string, unknown>;
+}
+
+export interface ModalInvokeResult {
+  result: unknown;
+}
+
+export type ConnectionTool = "execute_http" | "invoke_modal_function";
+
+/**
+ * Credential-free usage guidance derived from a bundled recipe and ordinary
+ * connection configuration. Never contains a stored value, field label, note
+ * or vault reference. See `connectionGuidance` in `src/recipes.ts`.
+ */
+export interface ConnectionGuidance {
+  /** A known, compatible recipe id; null selects the generic guidance. */
+  recipe: string | null;
+  tool: ConnectionTool;
+  summary: string;
+  /** A complete input skeleton for `tool`, naming this connection. */
+  example: Record<string, unknown>;
+  /** True when the example contains placeholders or is not a documented operation. */
+  schematic: boolean;
+  notes: string[];
+  /** Modal connections only: the owner-selected Function. */
+  target?: ModalTarget;
+}
+
+export interface ConnectionMetadata extends ConnectionGuidance {
   name: string;
   origin: string;
   authType: Authentication["type"];
+  /** False only for a connection whose vault is locked; calling it asks the owner to unlock. */
+  available: boolean;
+  reason?: "locked";
 }
 
 export interface Limits {

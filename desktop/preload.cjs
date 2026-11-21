@@ -29,4 +29,16 @@ contextBridge.exposeInMainWorld("desktop", {
   getIntegrations: () => ipcRenderer.invoke("desktop:get-integrations"),
   /** @param {{ host: "claude" | "codex", action: "install" | "update" | "remove" }} input */
   manageIntegration: input => ipcRenderer.invoke("desktop:manage-integration", input),
+  /**
+   * Touch ID or Without asking unlock of one vault; resolves to a status code.
+   * @param {string} name
+   * @param {boolean} owner The owner asked; otherwise only the outcome of the app's own attempt for an agent.
+   */
+  quickUnlock: (name, owner) => ipcRenderer.invoke("desktop:quick-unlock", name, owner),
+  /**
+   * @param {string} name
+   * @param {"passphrase" | "touch-id" | "without-asking"} mode
+   */
+  setUnlockMode: (name, mode) => ipcRenderer.invoke("desktop:set-unlock-mode", name, mode),
+  unlockAvailability: () => ipcRenderer.invoke("desktop:unlock-availability"),
 });

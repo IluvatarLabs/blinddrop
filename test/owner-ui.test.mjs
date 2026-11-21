@@ -81,7 +81,7 @@ async function holdPort(requestedPort = 0) {
 }
 
 // --- Compact AWS SigV4 verifier: proves the resolved secret key actually signed
-// the request the receiver accepted (identical construction to the Phase 1 core
+// the request the receiver accepted (identical construction to the v051-core
 // test, so a signing regression fails here too). ---
 
 function awsEncode(value) {
@@ -339,7 +339,8 @@ test('the owner UI signs multi-field secret requests, keeps values on replace, a
   assert.equal(initial.sessionFilePath, sessionFilePath);
   assert.equal(initial.logPath, logPath);
   assert.deepEqual(initial.vaults, [{ name: 'default', path: defaultPath, registered: false, exists: false, unlocked: false }]);
-  assert.equal(initial.session, null);
+  // The agent endpoint runs before any unlock, with nothing usable yet.
+  assert.deepEqual(initial.session.connections, {});
   assert.equal(initial.sessionError, null);
 
   // Pin the session to a known free port so we can assert the running endpoint.
@@ -351,7 +352,7 @@ test('the owner UI signs multi-field secret requests, keeps values on replace, a
   });
   assert.equal(created.status, 200);
   assert.deepEqual(created.json.vaults, [{ name: 'default', path: defaultPath, registered: true, exists: true, unlocked: true }]);
-  assert.equal(created.json.session, null);
+  assert.deepEqual(created.json.session.connections, {});
   assert.equal(created.json.sessionError, null);
   // `default` is reserved for the default path.
   const misnamed = await api(port, 'POST', '/api/vault/create', {
@@ -373,7 +374,7 @@ test('the owner UI signs multi-field secret requests, keeps values on replace, a
   });
   assert.equal(secretSet.status, 200);
   assert.deepEqual(secretSet.json, { ok: true });
-  assert.equal((await state()).session, null, 'a secret with no connection is not eligible to serve');
+  assert.deepEqual((await state()).session.connections, {}, 'a secret with no connection is not eligible to serve');
 
   // An aws-sigv4 connection referencing the two fields by vault#secret#field.
   const connectionSet = await api(port, 'POST', '/api/connection/set', {
@@ -390,7 +391,7 @@ test('the owner UI signs multi-field secret requests, keeps values on replace, a
   });
   assert.equal(connectionSet.status, 200);
 
-  // The implicit session starts on the chosen port and publishes the file the plugin reads.
+  // The endpoint serves the connection on the chosen port and publishes the file the agent reads.
   const running = await state();
   assert.notEqual(running.session, null);
   assert.deepEqual(Object.keys(running.session.connections), ['s3']);
@@ -406,8 +407,9 @@ test('the owner UI signs multi-field secret requests, keeps values on replace, a
   // A real signed request the receiver accepts, and a reflected secret blocked.
   const agent = await attach(published.mcpUrl, published.token);
   const connections = await agent.callTool({ name: 'list_connections', arguments: {} });
-  assert.deepEqual(connections.structuredContent.connections, [{
-    name: 's3', origin: receiverOrigin, authType: 'aws-sigv4',
+  assert.deepEqual(connections.structuredContent.connections.map(({ name, origin, authType, recipe, tool }) =>
+    ({ name, origin, authType, recipe, tool })), [{
+    name: 's3', origin: receiverOrigin, authType: 'aws-sigv4', recipe: null, tool: 'execute_http',
   }]);
   const probe = await execute(agent, { connection: 's3', path: '/probe' });
   assert.equal(probe.isError, undefined);
@@ -463,8 +465,7 @@ test('the owner UI signs multi-field secret requests, keeps values on replace, a
   });
   assert.equal(replaced.status, 200);
   const afterReplace = readSession();
-  assert.notEqual(afterReplace.token, published.token);
-  sessionTokens.push(afterReplace.token);
+  assert.equal(afterReplace.token, published.token, 'an owner edit keeps the agent token');
   const keptAgent = await attach(afterReplace.mcpUrl, afterReplace.token);
   const stillSigned = await execute(keptAgent, { connection: 's3', path: '/probe' });
   assert.equal(stillSigned.isError, undefined);
@@ -525,12 +526,20 @@ test('the owner UI signs multi-field secret requests, keeps values on replace, a
   });
   assert.equal(overwrite.status, 409);
 
-  // Locking the only vault ends the session and withdraws its file.
+  // Locking the only vault revokes the token: the endpoint stays, with nothing
+  // usable, and refuses the old token before anything else. An unlock keeps the new one.
   const locked = await api(port, 'POST', '/api/vault/lock', { token: ownerToken, body: { name: 'default' } });
   assert.equal(locked.status, 200);
   assert.equal(locked.json.vaults[0].unlocked, false);
-  assert.equal(locked.json.session, null);
-  assert.equal(existsSync(sessionFilePath), false);
+  assert.deepEqual(locked.json.session.connections, {});
+  const lockedSession = readSession();
+  assert.notEqual(lockedSession.token, published.token);
+  assert.deepEqual(lockedSession.connections, {});
+  sessionTokens.push(lockedSession.token);
+  assert.equal(await statusOf(published.mcpUrl, published.token), 403);
+  const unlocked = await api(port, 'POST', '/api/vault/unlock', { token: ownerToken, body: { name: 'default', passphrase } });
+  assert.equal(unlocked.status, 200);
+  assert.equal(readSession().token, lockedSession.token, 'an unlock keeps the agent token');
 
   const shutdown = await api(port, 'POST', '/api/shutdown', { token: ownerToken, body: {} });
   assert.deepEqual(shutdown.json, { ok: true });
@@ -569,11 +578,13 @@ test('two vaults: a cross-vault connection is usable only when both are unlocked
   const valueA = `key-a-${randomBytes(16).toString('hex')}`;
   const valueB = `key-b-${randomBytes(16).toString('hex')}`;
   const sessionTokens = [];
+  const received = [];
 
   const receiver = createHttpsServer({
     key: await readFile(keyPath),
     cert: await readFile(certPath),
   }, (request, response) => {
+    received.push(request.url);
     let ok = false;
     if (request.url === '/both') {
       ok = request.headers['x-key-a'] === valueA && request.headers['x-key-b'] === valueB;
@@ -655,15 +666,15 @@ test('two vaults: a cross-vault connection is usable only when both are unlocked
   assert.equal(firstOnly.structuredContent.status, 200);
   await agent.close();
 
-  // Locking the second vault drops exactly the cross-vault connection.
+  // Locking the second vault drops exactly the cross-vault connection from the
+  // usable set; `default` stays unlocked, so the token stays.
   await post('/api/vault/lock', { name: 'vaultb' });
   const oneUp = await state();
   assert.notEqual(oneUp.session, null);
-  assert.deepEqual(Object.keys(oneUp.session.connections), ['onlya'], 'locking vaultb removes exactly `both` from the session');
+  assert.deepEqual(Object.keys(oneUp.session.connections), ['onlya'], 'locking vaultb removes exactly `both` from the usable set');
   const secondToken = readSession().token;
-  assert.notEqual(secondToken, firstToken, 'the session token and file rotate when a vault is locked');
+  assert.equal(secondToken, firstToken, 'a lock that leaves a vault unlocked keeps the token');
   assert.deepEqual(Object.keys(readSession().connections), ['onlya']);
-  sessionTokens.push(secondToken);
 
   // Proof 3: the locked vault's reference is now missing on the cross-vault connection.
   const afterLock = await list();
@@ -675,16 +686,23 @@ test('two vaults: a cross-vault connection is usable only when both are unlocked
   assert.deepEqual(onlya.missingRefs, []);
   assert.equal(onlya.inSession, true);
 
-  // The first-vault-only connection keeps working under the new session; the
-  // dropped connection is no longer authorized to the agent.
+  // The first-vault-only connection keeps working; the cross-vault connection
+  // is listed as locked.
   const survivor = await attach(readSession().mcpUrl, secondToken);
   const stillWorks = await execute(survivor, { connection: 'onlya', path: '/onlya' });
   assert.equal(stillWorks.structuredContent.status, 200, 'the first-vault-only connection keeps working');
   const granted = await survivor.callTool({ name: 'list_connections', arguments: {} });
-  assert.deepEqual(granted.structuredContent.connections.map(c => c.name), ['onlya']);
-  const denied = await execute(survivor, { connection: 'both', path: '/both' });
-  assert.equal(denied.isError, true);
-  assert.equal(denied.structuredContent.error.code, 'ACCESS_DENIED', 'the cross-vault connection is no longer granted');
+  assert.deepEqual(granted.structuredContent.connections.map(c => [c.name, c.available, c.reason]),
+    [['onlya', true, undefined], ['both', false, 'locked']]);
+  // A call on the locked connection returns VAULT_LOCKED at once, before any
+  // credential use or dispatch: the receiver records nothing.
+  const receivedBefore = received.length;
+  const lockedAt = Date.now();
+  const lockedCall = await execute(survivor, { connection: 'both', path: '/both' });
+  assert.equal(lockedCall.isError, true);
+  assert.equal(lockedCall.structuredContent.error.code, 'VAULT_LOCKED');
+  assert.ok(Date.now() - lockedAt < 5_000, 'the endpoint holds no locked request open');
+  assert.equal(received.length, receivedBefore, 'a locked connection dispatches nothing');
   await survivor.close();
 
   // Persist one explicit exception: `default` stays unlocked on sleep while
@@ -732,13 +750,17 @@ test('two vaults: a cross-vault connection is usable only when both are unlocked
   const policyAgent = await attach(policySession.mcpUrl, policySession.token);
   assert.equal((await execute(policyAgent, { connection: 'onlya', path: '/onlya' })).structuredContent.status, 200);
   assert.deepEqual((await policyAgent.callTool({ name: 'list_connections', arguments: {} }))
-    .structuredContent.connections.map(connection => connection.name), ['onlya']);
+    .structuredContent.connections.map(connection => [connection.name, connection.available]),
+  [['onlya', true], ['both', false]]);
 
+  // Lock All revokes the token; the endpoint refuses it before anything else.
   const allLocked = await runtimePost('/api/vault/lock-all', {});
   assert.equal(allLocked.vaults.every(vault => !vault.unlocked), true);
-  assert.equal(allLocked.session, null);
-  assert.equal(existsSync(sessionFilePath), false);
-  await assert.rejects(() => statusOf(policySession.mcpUrl, policySession.token));
+  assert.deepEqual(allLocked.session.connections, {});
+  const allLockedSession = readSession();
+  assert.notEqual(allLockedSession.token, policySession.token);
+  sessionTokens.push(allLockedSession.token);
+  assert.equal(await statusOf(policySession.mcpUrl, policySession.token), 403);
   await policyAgent.close().catch(() => undefined);
 
   await runtimePost('/api/settings', { vaultLockPolicies: {
@@ -813,7 +835,8 @@ test('a held saved port advances to a working session and persists the actual po
   assert.ok(initialSettings.sessionPort >= 49_152 && initialSettings.sessionPort <= 65_535);
   assert.equal(JSON.parse(readFileSync(join(configDir, 'settings.json'), 'utf8')).sessionPort, initialSettings.sessionPort);
 
-  assert.equal((await api(port, 'POST', '/api/settings', {
+  // The endpoint moves at once: the held port advances to the next free one, which is saved.
+  assert.notEqual((await api(port, 'POST', '/api/settings', {
     token: ownerToken, body: { sessionPort: held.port },
   })).json.sessionPort, held.port);
   assert.equal((await api(port, 'POST', '/api/vault/create', {
@@ -849,7 +872,7 @@ test('a held saved port advances to a working session and persists the actual po
   assert.deepEqual(JSON.parse(firstRequest.structuredContent.body), { reachable: true });
   await firstAgent.close();
 
-  // A new session after locking reuses the actual saved port, rather than the held preference.
+  // The endpoint keeps its actual port through a lock and an unlock.
   assert.equal((await api(port, 'POST', '/api/vault/lock', { token: ownerToken, body: { name: 'default' } })).status, 200);
   const reopened = await api(port, 'POST', '/api/vault/unlock', { token: ownerToken, body: { name: 'default', passphrase } });
   assert.equal(reopened.status, 200);

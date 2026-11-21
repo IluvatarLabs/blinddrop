@@ -77,6 +77,8 @@ export interface UseEventRecord {
   outcome: "success" | "denied" | "blocked" | "failed";
   code: string | null;
   httpStatus: number | null;
+  /** Absent in events written before 0.6.2. */
+  tool: string | null;
 }
 
 const DYNAMIC_PORT_MIN = 49_152;
@@ -164,6 +166,7 @@ const UseEventSchema = z
     outcome: z.enum(["success", "denied", "blocked", "failed"]),
     code: z.string().nullable(),
     httpStatus: z.number().int().min(100).max(999).nullable().optional(),
+    tool: z.enum(["execute_http", "invoke_modal_function"]).optional(),
   })
   .strict();
 
@@ -262,7 +265,8 @@ function mergeSettings(base: OwnerSettings, patch: Partial<OwnerSettings>): Owne
   return merged;
 }
 
-function readStoredSettings(configDir: string): Partial<OwnerSettings> | undefined {
+/** The stored settings, read without writing; undefined when there is no file. */
+export function readStoredSettings(configDir: string): Partial<OwnerSettings> | undefined {
   const path = settingsPath(configDir);
   assertPath(path);
   let text: string;
@@ -416,7 +420,7 @@ function tailEvents(logPath: string): UseEventRecord[] {
       continue;
     }
     const parsed = UseEventSchema.safeParse(value);
-    if (parsed.success) events.push({ ...parsed.data, httpStatus: parsed.data.httpStatus ?? null });
+    if (parsed.success) events.push({ ...parsed.data, httpStatus: parsed.data.httpStatus ?? null, tool: parsed.data.tool ?? null });
   }
   return events;
 }

@@ -267,7 +267,7 @@ test('serve --http supports the official MCP client and a bounded ordinary HTTP 
   await client.connect(transport);
   t.after(() => client.close());
   const listed = await client.listTools();
-  assert.deepEqual(listed.tools.map(tool => tool.name).sort(), ['execute_http', 'list_connections']);
+  assert.deepEqual(listed.tools.map(tool => tool.name).sort(), ['execute_http', 'invoke_modal_function', 'list_connections']);
   const identity = await client.callTool({
     name: 'execute_http',
     arguments: { connection: 'receiver', path: '/identity' },

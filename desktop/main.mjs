@@ -7,8 +7,10 @@ import {
   nativeImage,
   nativeTheme,
   powerMonitor,
+  safeStorage,
   screen,
   shell,
+  systemPreferences,
   Tray,
 } from "electron";
 import { readFileSync } from "node:fs";
@@ -27,6 +29,11 @@ const TRAY_ICON = fileURLToPath(new URL("assets/trayTemplate.png", import.meta.u
 const PLUGIN_ROOT = app.isPackaged
   ? join(process.resourcesPath, "plugin")
   : fileURLToPath(new URL("node_modules/blinddrop/plugin/", import.meta.url));
+// The bundled runtime's CLI. Hosts run its `agent` command, and agents its
+// `run --app`, with this app's executable and ELECTRON_RUN_AS_NODE=1.
+const AGENT_SCRIPT = app.isPackaged
+  ? join(process.resourcesPath, "app.asar", "node_modules", "blinddrop", "dist", "cli.js")
+  : fileURLToPath(new URL("node_modules/blinddrop/dist/cli.js", import.meta.url));
 const START_FAILED_MESSAGE =
   "BlindDrop could not start the owner interface. Quit BlindDrop and start it again.";
 const SHUTDOWN_FAILED_LOG = "BlindDrop: the owner interface did not shut down cleanly.";
@@ -51,6 +58,8 @@ const SCREENS = {
 };
 const SETTINGS_TABS = new Set(["general", "security", "sessions", "vault", "advanced"]);
 const IDLE_LOCK_MINUTES = new Set([1, 5, 15, 30, 60]);
+/** A host whose launch refresh failed is refreshed again this long after each failed attempt. */
+const INTEGRATION_RETRY_MS = 5 * 60 * 1000;
 const LOCK_REQUIRED_COMMANDS = new Set([
   "new-connection",
   "new-secret",
@@ -96,8 +105,14 @@ let tray = null;
 let configDir = "";
 /** @type {import("./integrations.mjs").IntegrationManager | null} */
 let integrations = null;
-let appliedSessionPort = null;
 let integrationOperations = Promise.resolve();
+/**
+ * The pending retry of failed integration refreshes; at most one at a time.
+ * @type {ReturnType<typeof setTimeout> | null}
+ */
+let integrationRetryTimer = null;
+/** An agent's unlock request arrived before the launch window existed. */
+let unlockRequestedAtLaunch = false;
 /** Power events currently bound to effective vault policies, by event name. */
 const powerListeners = new Map();
 /** @type {ReturnType<typeof setInterval> | null} */
@@ -244,11 +259,13 @@ function refreshNativeAppearance() {
 
 /**
  * @param {keyof typeof SCREENS} screenName
+ * @param {boolean} [inactive] Show the window without taking keyboard focus.
  * @returns {import("electron").BrowserWindow}
  */
-function createWindow(screenName) {
+function createWindow(screenName, inactive = false) {
   const screen = SCREENS[screenName];
   const window = new BrowserWindow({
+    show: !inactive,
     width: screen.width,
     height: screen.height,
     minWidth: screen.minWidth,
@@ -266,6 +283,7 @@ function createWindow(screenName) {
     },
   });
   window.center();
+  if (inactive) window.showInactive();
   windowScreens.set(window, screenName);
   restrictNavigation(window.webContents, ui === null ? null : new URL(ui.url).origin);
   return window;
@@ -276,10 +294,13 @@ function createWindow(screenName) {
  * The `closed` handler leaves the app and the owner server running: closing the
  * window is not quitting, so the session keeps working from the menu bar.
  *
+ * @param {boolean} [inactive] Show the window without taking keyboard focus.
+ * @param {boolean} [launch] The app's launch window, whose Unlock screen tries
+ *   Touch ID or Without asking on its own; a window opened later waits.
  * @returns {Promise<void>}
  */
-function createMainWindow() {
-  mainWindow = createWindow("welcome");
+function createMainWindow(inactive = false, launch = false) {
+  mainWindow = createWindow("welcome", inactive);
   mainWindow.on("close", () => {
     rememberWorkspace(mainWindow);
   });
@@ -287,7 +308,7 @@ function createMainWindow() {
     mainWindow = null;
     if (settingsWindow !== null && !settingsWindow.isDestroyed()) settingsWindow.close();
   });
-  mainWindowLoad = mainWindow.loadURL(ui.launchUrl);
+  mainWindowLoad = mainWindow.loadURL(launch ? `${ui.launchUrl}&launch=1` : ui.launchUrl);
   return mainWindowLoad;
 }
 
@@ -373,6 +394,96 @@ function refreshWindows(detail) {
   }
 }
 
+/**
+ * An agent's call needs a locked vault. The runtime calls this once per new
+ * unlock request. Show the main window and reload its state now, because the
+ * page's own refresh skips hidden windows and open dialogs; the page opens the
+ * unlock. BlindDrop takes keyboard focus only when none of its windows has it:
+ * otherwise the owner may be typing a passphrase in another BlindDrop window,
+ * which keeps its keystrokes and stays in front. Before the launch creates its
+ * window, opening one here would make a second window: the launch window reads
+ * the request from its initial state, and the launch brings it forward.
+ */
+function showUnlockRequest() {
+  if (ui === null || mainWindowLoad === null) {
+    unlockRequestedAtLaunch = true;
+    return;
+  }
+  const focused = BrowserWindow.getFocusedWindow();
+  if (focused === null) {
+    showWindow();
+  } else {
+    // A minimized window is left minimized: restoring it can take focus.
+    if (mainWindow === null || mainWindow.isDestroyed()) void createMainWindow(true);
+    else if (!mainWindow.isMinimized()) mainWindow.showInactive();
+    focused.moveTop();
+  }
+  refreshWindows();
+  if (focused === null) app.focus({ steal: true });
+}
+
+/**
+ * An agent's call needs a locked vault (its Without asking vaults were already
+ * unlocked where the call asked). Before any window, the runtime shows the
+ * system Touch ID prompt for each Touch ID vault the request names, one at a
+ * time, or for a request that names none, the vault the Unlock screen would
+ * select; it stops at Lock All or Quit. The window comes up only while a vault the
+ * request needs is still locked, and the page asks for its passphrase without
+ * prompting for Touch ID itself.
+ *
+ * @param {import("blinddrop/dist/ui.js").UnlockRequest} request
+ */
+async function handleUnlockRequest(request) {
+  const session = ui;
+  if (session === null || mainWindowLoad === null) {
+    unlockRequestedAtLaunch = true;
+    return;
+  }
+  let unlocked = false;
+  try {
+    unlocked = await session.quickUnlockRequest(request);
+  } catch {
+    // The passphrase prompt below remains the fallback.
+  }
+  // Lock All or Quit ended it (null): no window; a later request asks again.
+  if (ui !== session || unlocked === null) return;
+  if (unlocked) refreshLockRequiredMenuItems();
+  if (session.unlockRequest() !== null) showUnlockRequest();
+  else if (unlocked) refreshWindows();
+}
+
+/**
+ * The page's Touch ID or Without asking unlock when the owner asked, or for an
+ * agent request's prompt, the outcome of the app's own attempt. Failures reach
+ * the page as a static code; nothing else crosses the bridge.
+ *
+ * @param {unknown} name
+ * @param {unknown} owner
+ */
+async function quickUnlock(name, owner) {
+  if (ui === null || typeof name !== "string") return "failed";
+  try {
+    return await ui.quickUnlock(name, owner === true);
+  } catch {
+    return "failed";
+  }
+}
+
+/**
+ * Settings → Vaults → Unlock.
+ *
+ * @param {unknown} name
+ * @param {unknown} mode
+ */
+async function setUnlockMode(name, mode) {
+  if (ui === null || typeof name !== "string" || typeof mode !== "string") return "failed";
+  try {
+    return await ui.setUnlockMode(name, mode);
+  } catch {
+    return "failed";
+  }
+}
+
 /** The owner runtime, rather than a renderer or window, owns lock state. */
 function hasUnlockedVaults() {
   return ui?.hasUnlockedVaults() === true;
@@ -409,14 +520,17 @@ async function lockAll() {
   }
 }
 
-/** Apply one automatic-lock event through the owner runtime's saved policies. */
+/**
+ * Apply one automatic-lock event through the owner runtime's saved policies.
+ * Windows hear about it only when it locked something; each page then cancels
+ * unlock work and editors for exactly the vaults the resulting state shows
+ * locked, never for a vault it predicts.
+ */
 async function lockForEvent(reason, idleSeconds = 0) {
   const session = ui;
   if (session === null) return;
   try {
-    const completion = session.lockForEvent(reason, idleSeconds);
-    refreshWindows({ lock: reason, intent: true, ...(reason === "idle" ? { idleSeconds } : {}) });
-    const changed = await completion;
+    const changed = await session.lockForEvent(reason, idleSeconds);
     if (changed) {
       refreshLockRequiredMenuItems();
       refreshWindows();
@@ -667,7 +781,7 @@ async function applySettings(settings) {
 
 /**
  * Serialize native host CLI work. A separate settled tail keeps one failed host
- * command from poisoning later status, update or endpoint operations.
+ * command from poisoning later status, update or refresh operations.
  *
  * @template T
  * @param {() => T | Promise<T>} operation
@@ -680,22 +794,22 @@ function serializeIntegration(operation) {
 }
 
 /**
- * Keep native host configuration ordered without making owner lock/session work
- * wait for a host CLI. The owner runtime persists and binds the port first.
+ * Refresh the managed integrations in the background: every host at launch,
+ * then, five minutes after each attempt, the hosts whose CLI was found but
+ * whose refresh failed, until none remain. The integration queue keeps it from
+ * overlapping Settings' Install, Update and Remove. The next attempt is armed
+ * only when the previous one settles and never once shutdown has cleared `ui`,
+ * so at most one timer exists.
  *
- * @param {number} port
+ * @param {string[]} [retry] Hosts the previous attempt returned.
  */
-function queueIntegrationEndpoint(port) {
-  if (
-    integrations === null ||
-    !Number.isInteger(port) ||
-    port < 1 ||
-    port > 65_535 ||
-    port === appliedSessionPort
-  ) return;
-  appliedSessionPort = port;
-  void serializeIntegration(() => integrations.applyEndpoint(port)).catch(() => {
-    integrations?.markEndpointRefreshFailed();
+function refreshIntegrations(retry) {
+  void serializeIntegration(() => integrations.refresh(retry)).then(failed => {
+    if (ui === null || failed.length === 0) return;
+    integrationRetryTimer = setTimeout(() => {
+      integrationRetryTimer = null;
+      refreshIntegrations(failed);
+    }, INTEGRATION_RETRY_MS);
   });
 }
 
@@ -780,6 +894,13 @@ function registerBridge() {
   ipcMain.handle("desktop:manage-integration", (_event, input) =>
     serializeIntegration(() => integrations?.manageIntegration(input)),
   );
+  ipcMain.handle("desktop:quick-unlock", (_event, name, owner) => quickUnlock(name, owner));
+  ipcMain.handle("desktop:set-unlock-mode", (_event, name, mode) => setUnlockMode(name, mode));
+  // Touch ID only: the Keychain is not touched until the owner chooses Touch
+  // ID or Without asking, so an owner who keeps Passphrase gets no item.
+  ipcMain.handle("desktop:unlock-availability", () => ({
+    touchId: systemPreferences.canPromptTouchID(),
+  }));
 }
 
 /** Show a static message and quit. Never reports the cause, which can carry the URL. */
@@ -797,6 +918,10 @@ function failStartup() {
 function shutdown() {
   if (shutdownPromise === null) {
     applyIdleLock(false);
+    if (integrationRetryTimer !== null) {
+      clearTimeout(integrationRetryTimer);
+      integrationRetryTimer = null;
+    }
     const session = ui;
     ui = null;
     shutdownPromise = (session === null ? Promise.resolve() : session.close()).catch(() => {
@@ -875,7 +1000,19 @@ app.whenReady().then(async () => {
     ui = await startOwnerUi({
       vaultPath,
       startupVaultPath: requestedVaultPath ?? undefined,
-      onSessionPortChanged: queueIntegrationEndpoint,
+      onUnlockRequested: handleUnlockRequest,
+      // An agent's call unlocked a Without asking vault with no window.
+      onUnlocked: () => {
+        refreshLockRequiredMenuItems();
+        refreshWindows();
+      },
+      quickUnlock: {
+        isEncryptionAvailable: () => safeStorage.isEncryptionAvailable(),
+        encryptString: plainText => safeStorage.encryptString(plainText),
+        decryptString: encrypted => safeStorage.decryptString(encrypted),
+        canPromptTouchID: () => systemPreferences.canPromptTouchID(),
+        promptTouchID: reason => systemPreferences.promptTouchID(reason),
+      },
     });
   } catch {
     failStartup();
@@ -891,15 +1028,19 @@ app.whenReady().then(async () => {
       configDir,
       pluginRoot: PLUGIN_ROOT,
       executablePath: process.execPath,
-      endpointPort: settings.sessionPort,
+      agentScript: AGENT_SCRIPT,
     });
-    queueIntegrationEndpoint(settings.sessionPort);
+    // Host CLIs run in the background; a slow host never delays the window.
+    refreshIntegrations();
     await applySettings(settings);
     registerBridge();
     buildMenu();
     createTray();
     // The page decides which screen to show and calls `setScreen` for its size.
-    await createMainWindow();
+    await createMainWindow(false, true);
+    // `ui` is null if the app began quitting while the window loaded.
+    const launchRequest = unlockRequestedAtLaunch && ui !== null ? ui.unlockRequest() : null;
+    if (launchRequest !== null) void handleUnlockRequest(launchRequest);
   } catch {
     failStartup();
   }

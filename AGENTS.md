@@ -11,13 +11,16 @@ of repository rules. Owner and client behavior is documented in
 - Stored credentials never reach an agent through BlindDrop's tools, results,
   errors, use logs or the child environment of `run`. Agent tools expose no
   secret-read or owner-administration operation.
-- Every execution interface shares one broker and one validated HTTPS sender.
+- Every execution interface shares one broker. HTTP requests share one
+  validated HTTPS sender; Modal Function calls use Modal's official SDK.
   Configured authentication overrides caller input; absolute targets, other
   authorities, redirects and metadata addresses are refused.
 - Owner unlock uses a hidden terminal prompt, an inherited descriptor, or the
   authenticated owner-only loopback page hosted by the browser or macOS app.
-  No passphrase environment variable, plaintext cache or agent-visible unlock
-  or administration route.
+  In the Mac app, a vault the owner sets to Touch ID or Without asking unlocks
+  from its passphrase sealed with the system keychain. No passphrase
+  environment variable, plaintext cache or agent-visible unlock or
+  administration route.
 - Each vault is an encrypted file with its own passphrase and lock state. A
   connection enters the running session only while every vault holding its
   referenced secret fields is unlocked; locking a vault removes exactly its

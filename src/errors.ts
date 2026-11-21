@@ -5,10 +5,13 @@ const messages = {
   VAULT_INVALID: "The vault is damaged or unsupported.",
   UNLOCK_FAILED: "Cannot unlock the vault: wrong passphrase or damaged archive.",
   SECRET_NOT_FOUND: "The secret is unavailable.",
+  SECRET_INVALID: "The connection's stored credential cannot be sent in a request. The owner must re-enter it in BlindDrop.",
   CONNECTION_NOT_FOUND: "The connection is unavailable.",
   ACCESS_DENIED: "This session is not authorized for that operation.",
+  UNSUPPORTED_OPERATION: "This connection does not support that tool. Call list_connections for its usage.",
   SESSION_EXPIRED: "The session has expired.",
   SESSION_CLOSED: "The session is closed.",
+  VAULT_LOCKED: "BlindDrop asked the owner to unlock the vault this request needs.",
   DESTINATION_DENIED: "The destination is not permitted.",
   RESPONSE_BLOCKED: "The upstream response contains credential material.",
   RESPONSE_TOO_LARGE: "The upstream response exceeds the size limit.",
@@ -30,6 +33,10 @@ export class BlindDropError extends Error {
     super(messages[code]);
     this.name = "BlindDropError";
   }
+}
+
+export function isErrorCode(value: unknown): value is ErrorCode {
+  return typeof value === "string" && Object.hasOwn(messages, value);
 }
 
 export function publicError(error: unknown): { code: ErrorCode; message: string } {

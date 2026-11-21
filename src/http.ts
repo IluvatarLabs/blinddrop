@@ -1,12 +1,20 @@
 import { isUtf8 } from "node:buffer";
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { createMcpHandler } from "@modelcontextprotocol/server";
 import { toNodeHandler } from "@modelcontextprotocol/node";
 
 import { Broker, DEFAULT_LIMITS, STREAM_LIMITS } from "./broker.js";
 import { BlindDropError, publicError, type ErrorCode } from "./errors.js";
-import { createMcpServer, MAX_MCP_MESSAGE_BYTES } from "./mcp.js";
+import {
+  brokerTools,
+  createToolServer,
+  errorResult,
+  MAX_MCP_MESSAGE_BYTES,
+  toolResult,
+  type ToolHandler
+} from "./mcp.js";
+import type { ConnectionMetadata } from "./types.js";
 
 const DYNAMIC_PORT_MIN = 49_152;
 const MAX_PORT = 65_535;
@@ -19,10 +27,13 @@ const ERROR_STATUS: Record<ErrorCode, number> = {
   VAULT_INVALID: 502,
   UNLOCK_FAILED: 401,
   SECRET_NOT_FOUND: 404,
+  SECRET_INVALID: 502,
   CONNECTION_NOT_FOUND: 404,
   ACCESS_DENIED: 403,
+  UNSUPPORTED_OPERATION: 400,
   SESSION_EXPIRED: 410,
   SESSION_CLOSED: 410,
+  VAULT_LOCKED: 423,
   DESTINATION_DENIED: 403,
   RESPONSE_BLOCKED: 502,
   RESPONSE_TOO_LARGE: 502,
@@ -48,6 +59,40 @@ export interface HttpSession {
   expiresAt: number;
   closed: Promise<void>;
   close(): Promise<void>;
+}
+
+/**
+ * What one agent request may use. A request keeps the access it arrived with
+ * until it ends, whatever the listener authorizes afterwards.
+ */
+export interface AgentAccess {
+  /** Serves the usable connections; absent while none is usable or nothing is served. */
+  broker?: Broker;
+  /** The connections the broker serves, which the SDK base-URL route accepts. */
+  names: readonly string[];
+  /** Each locked connection and the locked vaults it needs. */
+  locked: ReadonlyMap<string, readonly string[]>;
+  /** Credential-free listing items for the locked connections. */
+  lockedItems: readonly ConnectionMetadata[];
+  /** Every registered vault is locked: `list_connections` asks for the primary unlock. */
+  primary: boolean;
+  /**
+   * Nothing is served: every tool call and SDK route answers this static error
+   * and asks for nothing. `BUSY` while setup backup reads owner files; the
+   * failure's code when access could not be computed.
+   */
+  unavailable?: ErrorCode;
+  /** The token's and broker's expiry, which also bounds each request's timer. */
+  expiresAt: number;
+}
+
+/** Records that an agent request asked for these locked vaults ([] for the primary unlock). */
+export type UnlockAsk = (connection: string | null, vaults: readonly string[]) => void;
+
+interface Admission {
+  access: AgentAccess;
+  /** The session token the request presented; it is also a reflection pattern. */
+  token: string;
 }
 
 function values(request: IncomingMessage, name: string): string[] {
@@ -155,44 +200,59 @@ function nextPort(port: number, initial: number): number | undefined {
   return next === initial ? undefined : next;
 }
 
-/** One owner-unlocked, finite loopback session. No process-global lifecycle. */
-export async function startHttpSession(
-  broker: Broker,
-  expiresAt: number,
-  options: { port?: number } = {}
-): Promise<HttpSession> {
-  const port = options.port ?? 0;
+function checkedPort(port: number): number {
   if (!Number.isSafeInteger(port) || port < 0 || port > 65535) {
     throw new BlindDropError("INVALID_INPUT");
   }
-  const names = broker.listConnections().map(connection => connection.name);
-  const token = randomBytes(32).toString("base64url");
-  const tokenBytes = Buffer.from(token, "utf8");
-  const mcp = createMcpHandler(() => createMcpServer(broker, [token]));
-  const handleMcp = toNodeHandler(mcp);
-  const active = new Set<AbortController>();
-  let authority = "";
-  let stopped = false;
-  let closePromise: Promise<void> | undefined;
-  let finish!: () => void;
-  const closed = new Promise<void>(resolve => { finish = resolve; });
-  let expiryTimer: NodeJS.Timeout | undefined;
+  return port;
+}
 
-  const server = createServer({
-    maxHeaderSize: STREAM_LIMITS.headerBytes,
-    requestTimeout: STREAM_LIMITS.timeoutMs,
-    headersTimeout: DEFAULT_LIMITS.timeoutMs
-  }, (request, response) => {
-    void handle(request, response).catch(error => sendError(response, error));
-  });
-  // The ordinary Node parser rejects malformed framing. Never echo its diagnostics.
-  server.on("clientError", (_error, socket) => socket.destroy());
-  server.on("connect", (_request, socket) => socket.destroy());
-  server.on("upgrade", (_request, socket) => socket.destroy());
+/** Each connection's SDK base URL on a listener origin. */
+export function connectionUrls(origin: string, names: readonly string[]): Record<string, string> {
+  return Object.fromEntries(names.map(name => [name, `${origin}/api/${encodeURIComponent(name)}/`]));
+}
 
-  async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
-    if (stopped || Date.now() >= expiresAt) throw new BlindDropError("SESSION_EXPIRED");
-    authorize(request, authority, tokenBytes);
+/** Tool calls under one request's access: locked connections ask, the broker serves the rest. */
+function accessTools(access: AgentAccess, token: string, ask: UnlockAsk): ToolHandler {
+  const served = access.broker === undefined ? undefined : brokerTools(access.broker, [token]);
+  return async (name, input, signal) => {
+    if (access.unavailable !== undefined) return errorResult(new BlindDropError(access.unavailable));
+    if (name === "list_connections") {
+      if (access.primary) {
+        ask(null, []);
+        return errorResult(new BlindDropError("VAULT_LOCKED"));
+      }
+      try {
+        const usable = access.broker?.listConnections() ?? [];
+        return toolResult({ connections: [...usable, ...access.lockedItems] });
+      } catch (error) {
+        return errorResult(error);
+      }
+    }
+    const connection = (input as { connection: string }).connection;
+    const vaults = access.locked.get(connection);
+    if (vaults !== undefined) {
+      ask(connection, vaults);
+      return errorResult(new BlindDropError("VAULT_LOCKED"));
+    }
+    if (served === undefined) return errorResult(new BlindDropError("ACCESS_DENIED"));
+    return served(name, input, signal);
+  };
+}
+
+/**
+ * The one agent request handler both listeners use. `admit` checks the caller
+ * before anything else and returns the access the request keeps; `active`
+ * holds every admitted request until it ends.
+ */
+function agentHandler(
+  admit: (request: IncomingMessage) => Admission,
+  active: Map<AbortController, AgentAccess>,
+  ask: UnlockAsk,
+  ended: (access: AgentAccess) => void
+): (request: IncomingMessage, response: ServerResponse) => Promise<void> {
+  return async (request, response) => {
+    const { access, token } = admit(request);
     const target = request.url ?? "";
     if (!target.startsWith("/") || target.startsWith("//") || target.includes("#")) {
       throw new BlindDropError("INVALID_INPUT");
@@ -200,20 +260,30 @@ export async function startHttpSession(
     const isMcp = target === "/mcp";
     const match = /^\/api\/([^/?#]+)([/?][^#]*)?$/.exec(target);
     let connection: string | undefined;
+    let broker: Broker | undefined;
     let path = "/";
     if (!isMcp) {
       try { connection = match ? decodeURIComponent(match[1]) : undefined; }
       catch { throw new BlindDropError("INVALID_INPUT"); }
-      if (connection === undefined || !names.includes(connection)) throw new BlindDropError("ACCESS_DENIED");
+      if (connection === undefined) throw new BlindDropError("ACCESS_DENIED");
+      if (access.unavailable !== undefined) throw new BlindDropError(access.unavailable);
+      const vaults = access.locked.get(connection);
+      if (vaults !== undefined) {
+        // Nothing is dispatched: the request only asks for the unlock.
+        ask(connection, vaults);
+        throw new BlindDropError("VAULT_LOCKED");
+      }
+      broker = access.names.includes(connection) ? access.broker : undefined;
+      if (broker === undefined) throw new BlindDropError("ACCESS_DENIED");
       path = match?.[2] ?? "/";
       if (path.startsWith("?")) path = `/${path}`;
     }
     if (active.size >= STREAM_LIMITS.concurrency) throw new BlindDropError("BUSY");
     const controller = new AbortController();
-    active.add(controller);
+    active.set(controller, access);
     const duration = isMcp ? DEFAULT_LIMITS.timeoutMs : STREAM_LIMITS.timeoutMs;
     const timer = setTimeout(() => controller.abort(new BlindDropError("TIMEOUT")),
-      Math.max(0, Math.min(Date.now() + duration, expiresAt) - Date.now()));
+      Math.max(0, Math.min(Date.now() + duration, access.expiresAt) - Date.now()));
     const abortDelivery = () => {
       if (response.headersSent) { response.destroy(); request.destroy(); }
       else { request.pause(); sendError(response, controller.signal.reason); }
@@ -233,14 +303,16 @@ export async function startHttpSession(
           try { parsed = JSON.parse(body.toString("utf8")); }
           catch { throw new BlindDropError("INVALID_INPUT"); }
         }
-        await handleMcp(request, response, parsed);
-      } else {
-        const headers: Record<string, string> = Object.create(null);
-        for (const [name, value] of Object.entries(request.headers)) {
-          if (value !== undefined) headers[name] = Array.isArray(value) ? value.join(", ") : value;
+        // A fresh stateless MCP server for this request, bound to its access.
+        const mcp = createMcpHandler(() => createToolServer(accessTools(access, token, ask)));
+        try {
+          await toNodeHandler(mcp)(request, response, parsed);
+        } finally {
+          await mcp.close().catch(() => undefined);
         }
-        await broker.executeStreaming({
-          connection: connection!, method: request.method, path, headers,
+      } else {
+        await broker!.executeStreaming({
+          connection: connection!, method: request.method, path, headers: forwardedHeaders(request),
           ...(body.length ? { bodyBase64: body.toString("base64") } : {})
         }, {
           head(status, safeHeaders) {
@@ -256,8 +328,98 @@ export async function startHttpSession(
       active.delete(controller);
       controller.signal.removeEventListener("abort", abortDelivery);
       response.off("close", onClose);
+      ended(access);
+    }
+  };
+}
+
+function forwardedHeaders(request: IncomingMessage): Record<string, string> {
+  const headers: Record<string, string> = Object.create(null);
+  for (const [name, value] of Object.entries(request.headers)) {
+    if (value !== undefined) headers[name] = Array.isArray(value) ? value.join(", ") : value;
+  }
+  return headers;
+}
+
+function agentServer(handle: (request: IncomingMessage, response: ServerResponse) => Promise<void>): Server {
+  const server = createServer({
+    maxHeaderSize: STREAM_LIMITS.headerBytes,
+    requestTimeout: STREAM_LIMITS.timeoutMs,
+    headersTimeout: DEFAULT_LIMITS.timeoutMs
+  }, (request, response) => {
+    void handle(request, response).catch(error => sendError(response, error));
+  });
+  // The ordinary Node parser rejects malformed framing. Never echo its diagnostics.
+  server.on("clientError", (_error, socket) => socket.destroy());
+  server.on("connect", (_request, socket) => socket.destroy());
+  server.on("upgrade", (_request, socket) => socket.destroy());
+  return server;
+}
+
+/** Binds 127.0.0.1 with the saved-port collision fallback; returns the bound port. */
+async function listen(server: Server, port: number): Promise<number> {
+  let candidate = port;
+  while (true) {
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const onError = (error: Error) => {
+          server.off("listening", onListening);
+          reject(error);
+        };
+        const onListening = () => {
+          server.off("error", onError);
+          resolve();
+        };
+        server.once("error", onError);
+        server.once("listening", onListening);
+        server.listen(candidate, "127.0.0.1");
+      });
+      break;
+    } catch (error) {
+      const next = candidate === 0 || systemErrorCode(error) !== "EADDRINUSE"
+        ? undefined
+        : nextPort(candidate, port);
+      if (next === undefined) throw new BlindDropError("PORT_UNAVAILABLE");
+      candidate = next;
     }
   }
+  const address = server.address();
+  if (!address || typeof address === "string") throw new BlindDropError("INTERNAL_ERROR");
+  return address.port;
+}
+
+function closeServer(server: Server): Promise<void> {
+  const socketClosed = new Promise<void>(resolve => server.close(() => resolve()));
+  server.closeAllConnections();
+  return socketClosed;
+}
+
+/** One owner-unlocked, finite loopback session. No process-global lifecycle. */
+export async function startHttpSession(
+  broker: Broker,
+  expiresAt: number,
+  options: { port?: number } = {}
+): Promise<HttpSession> {
+  const port = checkedPort(options.port ?? 0);
+  const names = broker.listConnections().map(connection => connection.name);
+  const token = randomBytes(32).toString("base64url");
+  const tokenBytes = Buffer.from(token, "utf8");
+  const access: AgentAccess = {
+    broker, names, locked: new Map(), lockedItems: [], primary: false, expiresAt
+  };
+  const active = new Map<AbortController, AgentAccess>();
+  let authority = "";
+  let stopped = false;
+  let closePromise: Promise<void> | undefined;
+  let finish!: () => void;
+  const closed = new Promise<void>(resolve => { finish = resolve; });
+  let expiryTimer: NodeJS.Timeout | undefined;
+
+  const server = agentServer(agentHandler(request => {
+    if (stopped || Date.now() >= expiresAt) throw new BlindDropError("SESSION_EXPIRED");
+    authorize(request, authority, tokenBytes);
+    return { access, token };
+  }, active, () => undefined, () => undefined));
 
   async function close(): Promise<void> {
     if (closePromise) return closePromise;
@@ -265,55 +427,143 @@ export async function startHttpSession(
     clearTimeout(expiryTimer);
     broker.close();
     tokenBytes.fill(0);
-    for (const controller of active) controller.abort(new BlindDropError("SESSION_CLOSED"));
+    for (const controller of active.keys()) controller.abort(new BlindDropError("SESSION_CLOSED"));
     closePromise = (async () => {
-      const socketClosed = new Promise<void>(resolve => server.close(() => resolve()));
-      server.closeAllConnections();
-      await Promise.all([socketClosed, mcp.close().catch(() => undefined)]);
+      await closeServer(server);
       finish();
     })();
     return closePromise;
   }
 
+  let bound: number;
   try {
-    let candidate = port;
-    while (true) {
-      try {
-        await new Promise<void>((resolve, reject) => {
-          const onError = (error: Error) => {
-            server.off("listening", onListening);
-            reject(error);
-          };
-          const onListening = () => {
-            server.off("error", onError);
-            resolve();
-          };
-          server.once("error", onError);
-          server.once("listening", onListening);
-          server.listen(candidate, "127.0.0.1");
-        });
-        break;
-      } catch (error) {
-        const next = candidate === 0 || systemErrorCode(error) !== "EADDRINUSE"
-          ? undefined
-          : nextPort(candidate, port);
-        if (next === undefined) throw new BlindDropError("PORT_UNAVAILABLE");
-        candidate = next;
-      }
-    }
+    bound = await listen(server, port);
   } catch (error) {
     await close();
     throw error;
   }
   server.on("error", () => { void close(); });
-  const address = server.address();
-  if (!address || typeof address === "string") {
-    await close();
-    throw new BlindDropError("INTERNAL_ERROR");
-  }
-  authority = `127.0.0.1:${address.port}`;
+  authority = `127.0.0.1:${bound}`;
   const origin = `http://${authority}`;
-  const connections = Object.fromEntries(names.map(name => [name, `${origin}/api/${encodeURIComponent(name)}/`]));
   expiryTimer = setTimeout(() => { void close(); }, Math.max(0, expiresAt - Date.now()));
-  return { token, mcpUrl: `${origin}/mcp`, connections, expiresAt, closed, close };
+  return { token, mcpUrl: `${origin}/mcp`, connections: connectionUrls(origin, names), expiresAt, closed, close };
+}
+
+/** The owner runtime's agent listener: one for the runtime's lifetime. */
+export interface AgentEndpoint {
+  readonly port: number;
+  readonly mcpUrl: string;
+  readonly closed: Promise<void>;
+  /** The connections' SDK base URLs on this listener. */
+  urls(names: readonly string[]): Record<string, string>;
+  /**
+   * Replaces what the listener authorizes without closing it. With `drain`
+   * (an unlock), requests running on the previous broker finish and it closes
+   * after them; otherwise every broker closes at once, draining ones included.
+   * Any token other than `token`, and `token` from `access.expiresAt` on, is
+   * refused from now on.
+   */
+  update(token: string, access: AgentAccess, drain: boolean): void;
+  close(): Promise<void>;
+}
+
+export async function startAgentEndpoint(
+  port: number,
+  token: string,
+  access: AgentAccess,
+  ask: UnlockAsk
+): Promise<AgentEndpoint> {
+  let current = access;
+  let currentToken = token;
+  let tokenBytes = Buffer.from(token, "utf8");
+  const draining = new Set<AgentAccess>();
+  const active = new Map<AbortController, AgentAccess>();
+  let authority = "";
+  let stopped = false;
+  let closePromise: Promise<void> | undefined;
+  let finish!: () => void;
+  const closed = new Promise<void>(resolve => { finish = resolve; });
+
+  const holds = (held: AgentAccess): boolean => [...active.values()].includes(held);
+
+  /** A draining broker closes once no request that holds it is running. */
+  function ended(held: AgentAccess): void {
+    if (draining.has(held) && !holds(held)) {
+      draining.delete(held);
+      held.broker?.close();
+    }
+  }
+
+  /** Closes these brokers now and aborts the requests that hold them. */
+  function closeBrokers(accesses: Iterable<AgentAccess>): void {
+    const closing = new Set([...accesses].filter(held => held.broker !== undefined));
+    for (const held of closing) {
+      draining.delete(held);
+      held.broker!.close();
+    }
+    for (const [controller, held] of active) {
+      if (closing.has(held)) controller.abort(new BlindDropError("SESSION_CLOSED"));
+    }
+  }
+
+  const server = agentServer(agentHandler(request => {
+    if (stopped) throw new BlindDropError("SESSION_CLOSED");
+    // A stale or expired token is refused here, before it can reach a tool or
+    // an SDK route, even if renewal is late.
+    if (Date.now() >= current.expiresAt) throw new BlindDropError("ACCESS_DENIED");
+    authorize(request, authority, tokenBytes);
+    return { access: current, token: currentToken };
+  }, active, ask, ended));
+
+  async function close(): Promise<void> {
+    if (closePromise) return closePromise;
+    stopped = true;
+    closeBrokers([current, ...draining]);
+    tokenBytes.fill(0);
+    for (const controller of active.keys()) controller.abort(new BlindDropError("SESSION_CLOSED"));
+    closePromise = (async () => {
+      await closeServer(server);
+      finish();
+    })();
+    return closePromise;
+  }
+
+  let bound: number;
+  try {
+    bound = await listen(server, checkedPort(port));
+  } catch (error) {
+    await close();
+    throw error;
+  }
+  server.on("error", () => { void close(); });
+  authority = `127.0.0.1:${bound}`;
+  const origin = `http://${authority}`;
+
+  return {
+    port: bound,
+    mcpUrl: `${origin}/mcp`,
+    closed,
+    urls: names => connectionUrls(origin, names),
+    update(nextToken, next, drain) {
+      if (stopped) {
+        next.broker?.close();
+        return;
+      }
+      const previous = current;
+      current = next;
+      if (nextToken !== currentToken) {
+        tokenBytes.fill(0);
+        currentToken = nextToken;
+        tokenBytes = Buffer.from(nextToken, "utf8");
+      }
+      if (previous === next) return;
+      if (!drain) {
+        closeBrokers([previous, ...draining]);
+      } else if (previous.broker !== undefined) {
+        draining.add(previous);
+        ended(previous);
+      }
+    },
+    close
+  };
 }

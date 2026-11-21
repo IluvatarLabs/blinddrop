@@ -134,7 +134,7 @@ test('independent connection storage preserves locking, migration, activity, and
     // authority to read operational data or change connection configuration.
     const allLocked = await api('/api/state');
     assert.equal(allLocked.vaults.every(v => !v.unlocked), true);
-    assert.equal(allLocked.session, null);
+    assert.deepEqual(allLocked.session.connections, {}, 'the agent endpoint stays with nothing usable');
     const lockedRoutes = [
       ['/api/list'],
       ['/api/activity?limit=1'],

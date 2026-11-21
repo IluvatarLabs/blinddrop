@@ -9,6 +9,8 @@ import { TextDecoder } from "node:util";
 
 import { Command, CommanderError } from "commander";
 
+import { reachApp, serveAgent } from "./agent.js";
+
 import {
   createVault,
   defaultVaultPath,
@@ -27,7 +29,7 @@ import {
   type ConnectionSetOptions
 } from "./vault-admin.js";
 import { BlindDropError, publicError } from "./errors.js";
-import { startHttpSession, type HttpSession } from "./http.js";
+import { connectionUrls, startHttpSession, type HttpSession } from "./http.js";
 import { readOwnerInput } from "./input.js";
 import { serveMcp } from "./mcp.js";
 import { readSettings, writeSettings } from "./owner-files.js";
@@ -61,6 +63,9 @@ interface ChildExit {
   code: number | null;
   signal: NodeJS.Signals | null;
 }
+
+/** What a `run` child is given and what ends it: its own session, or the app's. */
+type RunSession = Pick<HttpSession, "token" | "connections" | "closed" | "close">;
 
 function readConnectionDefinition(path: string): Connection {
   if (typeof path !== "string" || path.length === 0 || path.includes("\0")) {
@@ -154,9 +159,10 @@ function validateRunEnvironment(options: RunOptions): void {
 }
 
 function mappedEnvironment(
-  http: HttpSession,
+  http: RunSession,
   connection: string,
   options: RunOptions,
+  app: boolean,
 ): NodeJS.ProcessEnv {
   const baseUrl = http.connections[connection];
   if (baseUrl === undefined) {
@@ -167,6 +173,8 @@ function mappedEnvironment(
     Object.create(null) as NodeJS.ProcessEnv,
     process.env,
   );
+  // The bundled runtime runs as Node through this variable; the child must not.
+  if (app) delete environment.ELECTRON_RUN_AS_NODE;
   const setEnvironment = (name: string, value: string): void => {
     if (process.platform === "win32") {
       const normalized = name.toUpperCase();
@@ -231,11 +239,12 @@ async function startOwnedHttpSession(
 }
 
 async function runChild(
-  http: HttpSession,
+  http: RunSession,
   connection: string,
   executable: string,
   args: string[],
   options: RunOptions,
+  app = false,
 ): Promise<number> {
   const stop = () => {
     void http.close();
@@ -243,7 +252,7 @@ async function runChild(
   let listeningForSignals = false;
 
   try {
-    const environment = mappedEnvironment(http, connection, options);
+    const environment = mappedEnvironment(http, connection, options, app);
     const child = spawn(executable, args, {
       env: environment,
       shell: false,
@@ -271,6 +280,23 @@ async function runChild(
     }
     await http.close();
   }
+}
+
+/**
+ * The running app's endpoint for one `run --app` child. The connection's base
+ * URL comes from the endpoint itself, so a locked connection answers the
+ * child's request with 423 VAULT_LOCKED. Only the child's exit or an owner
+ * signal ends it; the app owns the token.
+ */
+function appSession(mcpUrl: string, token: string, connection: string): RunSession {
+  let finish!: () => void;
+  const closed = new Promise<void>(resolve => { finish = resolve; });
+  return {
+    token,
+    connections: connectionUrls(new URL(mcpUrl).origin, [connection]),
+    closed,
+    close: async () => finish(),
+  };
 }
 
 function collect(value: string, previous: string[]): string[] {
@@ -562,9 +588,17 @@ async function main(): Promise<void> {
     });
 
   program
+    .command("agent")
+    .description("serve BlindDrop's tools over stdio to an agent host, through the running app")
+    .action(async () => {
+      await serveAgent();
+    });
+
+  program
     .command("run")
     .description("run one command inside an authenticated local BlindDrop session")
     .argument("<connection>", "authorize one exact connection name")
+    .option("--app", "use the running BlindDrop app's agent endpoint; never prompts")
     .option("--base-url-env <name>", "also set this environment variable to the local base URL")
     .option("--api-key-env <name>", "also set this environment variable to the session token")
     .option("--port <port>", "loopback port for the local session")
@@ -575,9 +609,27 @@ async function main(): Promise<void> {
       connection: string,
       executable: string,
       args: string[],
-      options: RunOptions,
+      options: RunOptions & { app?: boolean },
+      command: Command,
     ) => {
       validateName(connection);
+      if (options.app === true) {
+        // The app's session has its own port and lifetime.
+        if (options.port !== undefined || command.getOptionValueSource("ttl") === "cli") {
+          throw new BlindDropError("INVALID_INPUT");
+        }
+        validateRunEnvironment(options);
+        const reached = await reachApp({}, new AbortController().signal);
+        if (typeof reached === "string") {
+          process.stderr.write(`${reached}\n`);
+          process.exitCode = 1;
+          return;
+        }
+        process.exitCode = await runChild(
+          appSession(reached.mcpUrl, reached.token, connection), connection, executable, args, options, true,
+        );
+        return;
+      }
       const ttl = parseTtl(options.ttl);
       const port = options.port === undefined ? undefined : parsePort(options.port);
       validateRunEnvironment(options);

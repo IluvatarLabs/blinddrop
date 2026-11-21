@@ -1,7 +1,7 @@
 # Use BlindDrop with existing clients
 
-Use an encrypted local archive, unlock once, and let an ordinary client use a
-temporary local endpoint. The provider's real key stays inside BlindDrop. The
+Keep credentials in an encrypted local archive and let an ordinary client use a
+local endpoint. The provider's real key stays inside BlindDrop. The
 client receives a random session token that works only with that running
 helper and its allowed connections. No provider changes, cloud account with
 BlindDrop, installed daemon, or interception certificate are required.
@@ -22,11 +22,11 @@ the [security policy](SECURITY.md).
 
 ## Mac app: set up once
 
-Install **BlindDrop.app** from the [release page](https://github.com/IluvatarLabs/blinddrop/releases/latest), then create or open a vault. Choose a connection template, enter its credential in the owner window, and save. In **Settings → Sessions**, install the integration for Claude Code or local Codex. Follow the displayed host trust/reload instruction, then ask the agent to use the named connection. Normal Mac use needs no global CLI, Node installation, PATH changes or copied session token.
+Install **BlindDrop.app** from the [release page](https://github.com/IluvatarLabs/blinddrop/releases/latest), then create or open a vault. Choose a connection template, enter its credential in the owner window, and save. In **Settings → Sessions**, install the integration for Claude Code or local Codex once. Host sessions started afterwards have BlindDrop's tools. The first time, approve those tools when the host asks: in Claude Code, its permission prompt or the user-level allow rule `mcp__plugin_blinddrop_blinddrop__*`; in Codex, its tool approval setting for the plugin. Codex also asks you to review the plugin and its hook, and asks again whenever the plugin changes, as after an update or after moving the app. Then ask the agent to use the named connection. Normal Mac use needs no global CLI, Node installation, PATH changes or copied session token.
 
-Unlock the required vaults before agent use. Closing the window keeps the app and its current session running; the Dock or menu-bar icon reopens it. **Lock All** revokes access, and **Quit** ends the process. A new launch always starts locked.
+From then on, routine agent use needs nothing from you except an unlock when a vault is locked. You never start a session or unlock in advance. Agents may still ask you for what only you can give: task inputs, a credential or connection you have not added, an OAuth sign-in in the app, or a decision after an outcome that may be unknown. When an agent's call needs a vault that is locked, BlindDrop brings up its unlock; once you unlock it, the waiting call continues. If you do not unlock within 20 seconds, the agent gets `VAULT_LOCKED`, carries on with other work and tries again later. If the app is not running, the agent's call starts it, locked. Closing the window keeps the app and its agent access running; the Dock or menu-bar icon reopens it. **Lock All** revokes access, and **Quit** ends the process. A new launch starts locked; a vault set to Touch ID or Without asking then opens without its passphrase when an agent's call needs it or Unlock selects it at launch, Touch ID after a touch.
 
-The app manages its integration's Install, Update and Remove controls and endpoint. A configured integration still needs its host to load it and the vault to be unlocked. Hooks provide guidance; they do not replace the host's permission boundary. See the [integration guide](plugin/README.md) for host behavior and the optional manual setup.
+The app manages its integration's Install, Update and Remove controls, and refreshes an installed integration at every launch, so a moved or replaced app keeps working. The host's configuration holds no URL, port or session token: the integration reads the app's current endpoint for each call, so port changes, lock and unlock, edits and token renewal need no host reload or reconnect. Hooks provide guidance; they do not replace the host's permission boundary. See the [integration guide](plugin/README.md) for host behavior and the optional manual setup.
 
 ## Optional CLI: put a key in the archive
 
@@ -187,7 +187,7 @@ randomly once and saved in Settings. `--port PORT` saves a custom preference;
 if busy, the next available port is saved. Always use the reported URL.
 `--port 0` requests a temporary port without changing the saved preference. Repeat
 `--allow` to include another exact connection. The host sees only
-`list_connections` and `execute_http`. Existing stdio setup remains available
+`list_connections`, `execute_http` and `invoke_modal_function`. Existing stdio setup remains available
 in [CONFIGURATION.md](CONFIGURATION.md#agent-session).
 
 This CLI mode keeps owner unlock in the terminal. The Mac app provides its
@@ -197,7 +197,33 @@ this endpoint is for local clients, not a webpage API.
 
 ## Agent integrations
 
-Use the app's Agent Integrations controls for Claude Code and local Codex. They manage a local plugin through the host's native plugin commands, preserving unrelated configuration. The bundled helper reads the current session file and supplies session-use authority without exposing the provider key. Leave **Agent access** enabled in Settings. The app chooses and saves a random port on first use. A user change or automatic collision fallback updates its managed integration and may require the host reload shown there. Manual plugin/skill installation remains available in the [plugin guide](plugin/README.md). Hook support differs by host; the [security policy](SECURITY.md) defines the boundary.
+Use the app's Agent Integrations controls for Claude Code and local Codex. They manage a local plugin through the host's native plugin commands, preserving unrelated configuration. The plugin's MCP server is `blinddrop agent`, a stdio server the host launches from the app bundle:
+
+- It answers the host's MCP handshake and tool list itself, so the host's first connection never depends on the app.
+- For each tool call it reads the app's current session file and forwards the call to the app's local endpoint. For these calls the session token stays between `blinddrop agent` and the app, and the provider key never reaches the agent.
+- If the app is not running when a call starts, it starts it in the background, locked, and waits up to 8 seconds for its endpoint.
+- If the call needs a locked vault, BlindDrop shows its unlock and `blinddrop agent` sends the call again every second for up to 20 seconds, stopping at once if the host cancels. If the app goes away during that wait, for example because you quit it, the call ends with its last result and the app is not started again. Nothing is sent upstream while the vault is locked, so this never runs a request twice. A call whose outcome may be unknown is never sent again.
+
+Leave **Agent access** enabled in Settings; with it off, the agent's calls report that agent access is turned off and the app is not started, and turning it off ends running `run --app` commands' access (below). The app chooses and saves a random port on first use, and the integration follows it without a host reload. Manual plugin/skill installation remains available in the [plugin guide](plugin/README.md); a manual MCP setup runs `blinddrop agent` from the CLI on PATH. Hook support differs by host; the [security policy](SECURITY.md) defines the boundary.
+
+The plugin's one hook steers agents away from BlindDrop's own files: it refuses Read, Edit and Write calls on paths under `~/.config/blinddrop/`, and shell commands that name that path, including commands that only mention it, such as a search over source code for that string. It does not restrict other files. Codex sends file edits to hooks as `apply_patch`, which the hook does not check, so in Codex it refuses only the shell commands.
+
+### Commands that agents run
+
+An agent that needs an SDK or command-line client runs it through the app:
+
+```sh
+blinddrop run --app CONNECTION -- COMMAND ARGS...
+```
+
+`--base-url-env NAME` and `--api-key-env NAME` work as for `run` above. It reads the app's session file and never prompts. Run from the app's bundled runtime, it starts the app when it is not running. The command receives `BLINDDROP_BASE_URL` (the connection's base URL on the app's endpoint) and `BLINDDROP_TOKEN` (the app's session token), never the provider key. In an app-only installation, BlindDrop's MCP instructions and skill give agents the exact command for the runtime bundled in the app, so no CLI on PATH is needed.
+
+- A locked connection answers the command's first request with HTTP 423 `VAULT_LOCKED`, and BlindDrop shows its unlock. The agent runs the command again after the unlock.
+- The token works for every connection the agent can already use through its tools, not only `CONNECTION`. It keeps working across unlocks and edits, and stops when every vault becomes locked, when **Agent access** is turned off, or at the 24-hour renewal. It gives the command no access the agent's tools lack.
+- Changing the session port in Settings ends running commands' access, because their base URL names the old port.
+- A host that sandboxes shell commands can block `run --app`. In Claude Code's sandboxed Bash, a command cannot reach a local server outside the sandbox by default, and the suggested `Read(~/.config/blinddrop/**)` deny rule also stops it from reading the session file. Run such commands outside the sandbox through the host's own settings; permissions and isolation belong to the host.
+
+Without `--app`, `run` is the owner-terminal workflow above.
 
 ## What fits, and what does not
 
@@ -223,11 +249,13 @@ before releasing it. Neither promises to detect a malicious provider's
 arbitrary transformation of its credential. Cookies/trailers are discarded;
 SDK redirects fail instead of sending a client to another destination.
 BlindDrop never retries an ambiguous operation. WebSocket, gRPC, browser-login
-automation, native databases and SSH are outside this release.
+automation, native databases and SSH are outside this release, except the
+bounded [Modal Function](CONFIGURATION.md#modal-functions) invocation through
+Modal's official SDK.
 
 ## Maintain your vault
 
-Stop active helpers before owner changes, then start a new session:
+A running CLI helper (`serve` or `run` without `--app`) keeps the archive it opened. Stop it before owner changes from the CLI, then start a new one:
 
 ```sh
 blinddrop secret set work-key

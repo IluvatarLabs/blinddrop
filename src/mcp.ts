@@ -1,11 +1,15 @@
-import { McpServer, type StandardSchemaWithJSON } from "@modelcontextprotocol/server";
+import {
+  McpServer,
+  type CallToolResult,
+  type StandardSchemaWithJSON
+} from "@modelcontextprotocol/server";
 import { StdioServerTransport } from "@modelcontextprotocol/server/stdio";
 import process from "node:process";
 import { z } from "zod";
 
 import type { Broker } from "./broker.js";
 import { publicError } from "./errors.js";
-import type { RequestInput } from "./types.js";
+import type { ModalInvokeInput, RequestInput } from "./types.js";
 
 export const MAX_MCP_MESSAGE_BYTES = 2 * 1024 * 1024;
 
@@ -45,6 +49,14 @@ const requestSchema = z
     { message: "Invalid input." }
   );
 
+const modalSchema = z
+  .object({
+    connection: z.string(),
+    args: z.array(z.unknown()).optional(),
+    kwargs: z.record(z.string(), z.unknown()).optional()
+  })
+  .strict();
+
 const listSchema = z.object({}).strict();
 
 function staticValidation<T>(schema: z.ZodType<T>): StandardSchemaWithJSON<unknown, T> {
@@ -63,43 +75,51 @@ function staticValidation<T>(schema: z.ZodType<T>): StandardSchemaWithJSON<unkno
   };
 }
 
-function errorResult(error: unknown) {
+export type ToolName = "list_connections" | "execute_http" | "invoke_modal_function";
+
+/** Answers one tool call whose input already passed that tool's schema. */
+export type ToolHandler = (
+  name: ToolName,
+  input: unknown,
+  signal: AbortSignal
+) => Promise<CallToolResult>;
+
+export function toolResult(value: object): CallToolResult {
+  return {
+    content: [{ type: "text", text: JSON.stringify(value) }],
+    structuredContent: value
+  };
+}
+
+export function errorResult(error: unknown): CallToolResult {
   const safe = publicError(error);
   const structuredContent = { error: safe };
   return {
-    isError: true as const,
-    content: [{ type: "text" as const, text: JSON.stringify(structuredContent) }],
+    isError: true,
+    content: [{ type: "text", text: JSON.stringify(structuredContent) }],
     structuredContent
   };
 }
 
-export function createMcpServer(
-  broker: Broker,
-  extraPatterns: readonly string[] = []
-): McpServer {
+/**
+ * The one definition of the three tools (names, schemas and descriptions).
+ * The owner runtime's endpoint, CLI `serve` and `blinddrop agent` all serve it,
+ * so every description holds for each of them.
+ */
+export function createToolServer(handler: ToolHandler, instructions?: string): McpServer {
   const server = new McpServer(
-    { name: "blinddrop", version: "0.6.1" },
-    { capabilities: { tools: {} } }
+    { name: "blinddrop", version: "0.6.2" },
+    { capabilities: { tools: {} }, ...(instructions === undefined ? {} : { instructions }) }
   );
 
   server.registerTool(
     "list_connections",
     {
       title: "List authorized connections",
-      description: "List metadata for connections authorized in this BlindDrop session.",
+      description: "List the connections this BlindDrop session can use, with each connection's tool and usage guidance: an input example, notes and, for Modal, the owner-selected Function. A connection marked `available: false` is locked. Calling it asks the owner to unlock it in BlindDrop and returns `VAULT_LOCKED`; continue other work and call it again later.",
       inputSchema: staticValidation(listSchema)
     },
-    async () => {
-      try {
-        const structuredContent = { connections: broker.listConnections() };
-        return {
-          content: [{ type: "text", text: JSON.stringify(structuredContent) }],
-          structuredContent
-        };
-      } catch (error) {
-        return errorResult(error);
-      }
-    }
+    (input, context) => handler("list_connections", input, context.mcpReq.signal)
   );
 
   server.registerTool(
@@ -109,21 +129,47 @@ export function createMcpServer(
       description: "Execute an HTTPS request through an authorized BlindDrop connection.",
       inputSchema: staticValidation(requestSchema)
     },
-    async (input, context) => {
-      try {
-        const result = await broker.execute(input as RequestInput, {
-          extraPatterns, signal: context.mcpReq.signal
-        });
-        return {
-          content: [{ type: "text", text: JSON.stringify(result) }],
-          structuredContent: result
-        };
-      } catch (error) {
-        return errorResult(error);
-      }
-    }
+    (input, context) => handler("execute_http", input, context.mcpReq.signal)
+  );
+
+  server.registerTool(
+    "invoke_modal_function",
+    {
+      title: "Invoke an authorized Modal Function",
+      description: "Invoke only the owner-selected deployed Function of an authorized Modal connection, with JSON positional `args` and keyword `kwargs`, and return its JSON result. Call list_connections first for the connection's target and argument usage; do not guess the Function's arguments. Each call submits one invocation, which BlindDrop never resubmits; an error can mean the Function still ran.",
+      inputSchema: staticValidation(modalSchema)
+    },
+    (input, context) => handler("invoke_modal_function", input, context.mcpReq.signal)
   );
   return server;
+}
+
+/** The tools as one broker serves them, with every listed connection available. */
+export function brokerTools(
+  broker: Broker,
+  extraPatterns: readonly string[] = []
+): ToolHandler {
+  return async (name, input, signal) => {
+    try {
+      switch (name) {
+        case "list_connections":
+          return toolResult({ connections: broker.listConnections() });
+        case "execute_http":
+          return toolResult(await broker.execute(input as RequestInput, { extraPatterns, signal }));
+        case "invoke_modal_function":
+          return toolResult(await broker.invokeModal(input as ModalInvokeInput, { extraPatterns, signal }));
+      }
+    } catch (error) {
+      return errorResult(error);
+    }
+  };
+}
+
+export function createMcpServer(
+  broker: Broker,
+  extraPatterns: readonly string[] = []
+): McpServer {
+  return createToolServer(brokerTools(broker, extraPatterns));
 }
 
 export async function serveMcp(

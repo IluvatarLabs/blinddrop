@@ -16,10 +16,12 @@ import { execFile } from "node:child_process";
 
 const execFileAsync = promisify(execFile);
 
-const BUNDLED_VERSION = "0.6.1";
+const BUNDLED_VERSION = "0.6.2";
 const MARKETPLACE = "blinddrop-desktop";
 const PLUGIN = "blinddrop";
 const SELECTOR = `${PLUGIN}@${MARKETPLACE}`;
+// The skill's `run --app` line for a CLI on PATH; staging names the bundled runtime.
+const RUN_APP_LINE = "blinddrop run --app CONNECTION -- COMMAND";
 const COMMAND_TIMEOUT_MS = 30_000;
 const COMMAND_MAX_BYTES = 1024 * 1024;
 
@@ -76,10 +78,6 @@ const HOSTS = {
 
 class HostFailure extends Error {}
 
-function validPort(value) {
-  return Number.isInteger(value) && value >= 1 && value <= 65_535;
-}
-
 function shellQuote(value) {
   return `'${value.replaceAll("'", `'"'"'`)}'`;
 }
@@ -135,17 +133,17 @@ function guidance(host, state) {
   }
   if (state === "not-installed") {
     return host === "claude"
-      ? "Install BlindDrop for Claude Code to add its skill, credential-file guard hook, and authenticated MCP connection."
-      : "Install BlindDrop for Codex to add its skill and authenticated MCP connection.";
+      ? "Install BlindDrop for Claude Code to add its skill, guard hook, and authenticated MCP connection."
+      : "Install BlindDrop for Codex to add its skill, guard hook, and authenticated MCP connection.";
   }
   if (host === "claude") {
     return state === "update-available"
-      ? "Update, then restart Claude Code or run /reload-plugins in an existing session."
-      : "Configured. Restart Claude Code or run /reload-plugins in an existing session; unlock a vault before use.";
+      ? "Update, then start a new Claude Code session or run /reload-plugins once."
+      : "Start a new Claude Code session or run /reload-plugins once, and allow BlindDrop's tools when Claude Code asks.";
   }
   return state === "update-available"
-    ? "Update, then start a new Codex session and review the BlindDrop plugin if Codex prompts."
-    : "Configured. Start a new Codex session and review the BlindDrop plugin if Codex prompts; unlock a vault before use.";
+    ? "Update, then start a new Codex session and review the plugin if Codex asks."
+    : "Start a new Codex session, then review the plugin and allow BlindDrop's tools if Codex asks.";
 }
 
 function unavailableStatus(host, available = false, message) {
@@ -176,7 +174,7 @@ export class IntegrationManager {
     configDir,
     pluginRoot,
     executablePath,
-    endpointPort,
+    agentScript,
     homeDir = homedir(),
     environment = process.env,
     binaryOverrides = {},
@@ -184,8 +182,7 @@ export class IntegrationManager {
     this.configDir = configDir;
     this.pluginRoot = pluginRoot;
     this.executablePath = executablePath;
-    if (!validPort(endpointPort)) throw new HostFailure();
-    this.endpointPort = endpointPort;
+    this.agentScript = agentScript;
     this.homeDir = homeDir;
     this.environment = { ...environment, HOME: homeDir };
     this.binaryOverrides = binaryOverrides;
@@ -226,25 +223,36 @@ export class IntegrationManager {
     const temporary = `${this.marketplaceRoot}.next-${suffix}`;
     const previous = `${this.marketplaceRoot}.previous-${suffix}`;
     await rm(temporary, { recursive: true, force: true });
+    try {
+      return await this.stageInto(temporary, previous);
+    } catch (error) {
+      // A failed stage deletes its staging copy, which a retried refresh would otherwise repeat.
+      await rm(temporary, { recursive: true, force: true }).catch(() => {});
+      throw error;
+    }
+  }
+
+  /** Builds the staged marketplace in `temporary` and publishes it. */
+  async stageInto(temporary, previous) {
     await cp(this.pluginRoot, join(temporary, "plugins", PLUGIN), { recursive: true });
 
     const stagedPlugin = join(temporary, "plugins", PLUGIN);
-    // Both host catalogues keep this app-owned marketplace path. Codex does
-    // not populate Claude's plugin-root environment variable for MCP header
-    // helpers, so write the stable post-rename path that both hosts can run.
+    // Both host catalogues keep this app-owned marketplace path. Write the
+    // stable post-rename path, which both hosts can run without a plugin-root
+    // environment variable.
     const publishedPlugin = join(this.marketplaceRoot, "plugins", PLUGIN);
     const mcpPath = join(stagedPlugin, ".mcp.json");
     const mcp = parseJson(await readFile(mcpPath, "utf8"));
     const server = mcp?.mcpServers?.[PLUGIN];
     if (server === null || typeof server !== "object") throw new HostFailure();
-    server.type = "http";
-    server.url = `http://127.0.0.1:${this.endpointPort}/mcp`;
-    const helper = bundledCommand(
-      this.executablePath,
-      join(publishedPlugin, "scripts", "session-headers.mjs"),
-    );
-    server.headersHelper = helper;
-    server.http_headers_helper = helper;
+    // The host launches the bundled runtime's stdio server with the app's own
+    // executable, so the configuration holds no URL, port or credential.
+    mcp.mcpServers[PLUGIN] = {
+      type: "stdio",
+      command: this.executablePath,
+      args: [this.agentScript, "agent"],
+      env: { ELECTRON_RUN_AS_NODE: "1" },
+    };
     await writeFile(mcpPath, `${JSON.stringify(mcp, null, 2)}\n`, { mode: 0o600 });
 
     const hooksPath = join(stagedPlugin, "hooks", "hooks.json");
@@ -254,17 +262,25 @@ export class IntegrationManager {
       for (const entry of entries) {
         for (const hook of Array.isArray(entry?.hooks) ? entry.hooks : []) {
           if (typeof hook?.command !== "string") continue;
-          const match = hook.command.match(/scripts\/(guard|session-context)\.mjs/u);
-          if (match !== null) {
+          if (/scripts\/guard\.mjs/u.test(hook.command)) {
             hook.command = bundledCommand(
               this.executablePath,
-              join(publishedPlugin, "scripts", `${match[1]}.mjs`),
+              join(publishedPlugin, "scripts", "guard.mjs"),
             );
           }
         }
       }
     }
     await writeFile(hooksPath, `${JSON.stringify(hooks, null, 2)}\n`, { mode: 0o600 });
+
+    // App-only installs have no CLI on PATH: name the bundled runtime instead.
+    const skillPath = join(stagedPlugin, "skills", PLUGIN, "SKILL.md");
+    const skill = await readFile(skillPath, "utf8");
+    if (!skill.includes(RUN_APP_LINE)) throw new HostFailure();
+    const bundledRunLine =
+      `ELECTRON_RUN_AS_NODE=1 ${shellQuote(this.executablePath)} ` +
+      `${shellQuote(this.agentScript)} run --app CONNECTION -- COMMAND`;
+    await writeFile(skillPath, skill.replaceAll(RUN_APP_LINE, () => bundledRunLine));
 
     const pluginEntry = {
       name: PLUGIN,
@@ -307,7 +323,12 @@ export class IntegrationManager {
   }
 
   async installedVersion(host, binary) {
-    const { stdout } = await this.run(binary, ["plugin", "list", "--json"]);
+    // An unscoped Codex `plugin list` re-syncs its remote plugin catalog when the
+    // cache is stale (36 s measured); listing only BlindDrop's marketplace never does.
+    const args = host === "codex"
+      ? ["plugin", "list", "--marketplace", MARKETPLACE, "--json"]
+      : ["plugin", "list", "--json"];
+    const { stdout } = await this.run(binary, args);
     const entries = HOSTS[host].installed(parseJson(stdout));
     for (const entry of entries) {
       const version = pluginVersion(host, entry);
@@ -390,9 +411,9 @@ export class IntegrationManager {
       state,
       actions: {
         install: !configured,
-        // Refresh is always available for a configured host. Besides a version
-        // change, it repairs a changed endpoint or app executable path through
-        // the host's own supported update command.
+        // Update is always available for a configured host. Besides a version
+        // change, it repairs a moved or replaced app through the host's own
+        // supported update command, as the launch refresh does.
         update: configured,
         remove: configured,
       },
@@ -406,14 +427,6 @@ export class IntegrationManager {
   async getIntegrations() {
     const [claude, codex] = await Promise.all([this.status("claude"), this.status("codex")]);
     return { bundledVersion: BUNDLED_VERSION, claude, codex };
-  }
-
-  markEndpointRefreshFailed() {
-    // `status` gates this marker on an integration actually being configured.
-    // Mark both because an unexpected queue failure can occur before the
-    // manager has identified which host operation failed.
-    this.refreshFailures.add("claude");
-    this.refreshFailures.add("codex");
   }
 
   async installOrUpdate(host, binary, action) {
@@ -497,44 +510,47 @@ export class IntegrationManager {
     }
   }
 
-  async applyEndpoint(port) {
-    if (!validPort(port)) return this.getIntegrations();
-    this.endpointPort = port;
-    const statuses = await this.getIntegrations();
-    for (const host of ["claude", "codex"]) {
-      if (statuses[host].state === "unavailable") this.refreshFailures.add(host);
-      else if (statuses[host].state === "not-installed") this.refreshFailures.delete(host);
-    }
-    if (!statuses.claude.configured && !statuses.codex.configured) {
-      return statuses;
-    }
-    try {
-      await this.stage();
-    } catch {
-      for (const host of ["claude", "codex"]) {
-        if (statuses[host].configured) this.refreshFailures.add(host);
-      }
-      return this.getIntegrations();
-    }
-    for (const host of ["claude", "codex"]) {
-      if (!statuses[host].configured) continue;
-      const binary = await this.findHost(host);
-      if (binary === null) continue;
+  /**
+   * Run Update for every host that already has the integration installed, so
+   * a moved, replaced or upgraded app keeps working. Called at app launch with
+   * no argument, then with the hosts it returned until it returns none. A
+   * returned host that Settings has since updated or removed is no longer
+   * marked failed, so the retry skips it. A failure of a host whose CLI was
+   * found logs the host and the failed step, never command output; Settings then
+   * shows Update available when it can read the installed version.
+   *
+   * @param {string[]} [retry] Hosts returned by the previous call.
+   * @returns {Promise<string[]>} Hosts whose CLI was found but whose refresh failed.
+   */
+  async refresh(retry) {
+    const hosts = retry === undefined
+      ? Object.keys(HOSTS)
+      : retry.filter(host => this.refreshFailures.has(host));
+    const failed = [];
+    for (const host of hosts) {
+      let step = "finding the host";
       try {
-        await this.ensureMarketplace(host, binary);
-        if (host === "claude") {
-          await this.run(binary, ["plugin", "marketplace", "update", MARKETPLACE]);
-        } else {
-          await this.run(binary, ["plugin", "add", SELECTOR, "--json"]);
+        const binary = await this.findHost(host);
+        if (binary === null) throw new HostFailure();
+        step = "reading the installed version";
+        if ((await this.installedVersion(host, binary)) !== null) {
+          step = "updating";
+          await this.installOrUpdate(host, binary, "update");
         }
         this.refreshFailures.delete(host);
       } catch {
-        // Settings are already saved by the owner runtime. Mark Update as
-        // available so the owner has a truthful retry instead of false Current.
+        // `status` shows this only once the host reports the integration
+        // installed, so a host found or readable later is not marked Current.
         this.refreshFailures.add(host);
+        // A host with no CLI has nothing to refresh: no log and no retry.
+        if (step === "finding the host") continue;
+        console.error(
+          `BlindDrop: the ${HOSTS[host].name} integration could not be refreshed (${step} failed).`,
+        );
+        failed.push(host);
       }
     }
-    return this.getIntegrations();
+    return failed;
   }
 }
 

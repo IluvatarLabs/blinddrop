@@ -39,7 +39,7 @@ anything to work with BlindDrop.
   <a href="assets/screenshots/templates.png"><img src="assets/screenshots/templates.png" width="960" alt="BlindDrop's service template chooser" /></a>
 </p>
 
-<p align="center"><sub>BlindDrop 0.6.0 with demo data. No real credentials or connected accounts.</sub></p>
+<p align="center"><sub>BlindDrop 0.6.2 with demo data. No real credentials or connected accounts.</sub></p>
 
 ## Why
 
@@ -47,40 +47,41 @@ Giving an agent a key gives it a copy. That copy can end up in a conversation,
 a generated script, or a log.
 
 BlindDrop keeps the key in a local vault and makes requests on the agent's
-behalf. You unlock the helper once for a session. The agent can use the
+behalf. When an agent needs a locked vault, BlindDrop asks you to unlock it,
+unless you set that vault to unlock without asking. The agent can use the
 connections you allowed, but has no tool for reading their keys.
 
 Each vault is a file you own, with its own passphrase and lock state. You can
-copy it, back it up, and move it to another computer. Locking a vault removes
-the connections that need it; locking every vault or quitting the helper ends
-the session. Saved keys remain encrypted in their vaults. There is no
+copy it, back it up, and move it to another computer. Locking a vault makes
+the connections that need it unavailable until it is unlocked again. Saved keys
+remain encrypted in their vaults. There is no
 subscription or hosted account to maintain.
 
 ## Install
 
-Download the Mac app from the [BlindDrop 0.6.1 release](https://github.com/IluvatarLabs/blinddrop/releases/tag/v0.6.1), move **BlindDrop.app** into Applications, and open it. The download is for Apple silicon Macs and is unsigned and not notarized. The app includes its runtime: no Node installation, global CLI, PATH changes or terminal are needed.
+Download the Mac app from the [BlindDrop 0.6.2 release](https://github.com/IluvatarLabs/blinddrop/releases/tag/v0.6.2), move **BlindDrop.app** into Applications, and open it. The download is for Apple silicon Macs and is unsigned and not notarized. The app includes its runtime: no Node installation, global CLI, PATH changes or terminal are needed.
 
 If macOS blocks the first launch, follow [Apple's instructions for opening an app from an unidentified developer](https://support.apple.com/en-us/102445).
 
 1. Create a vault with a passphrase, or open an existing encrypted vault.
-2. Choose a connection template, enter its credential in the owner window, and save.
+2. Choose a connection template, enter its credential in the owner window, and save. Most templates then test it with one read-only request and show the provider's answer.
 3. Open **Settings → Sessions** and install the integration for Claude Code or local Codex. Follow the host trust/reload instruction shown there.
-4. Unlock the vaults the connection needs, then ask the agent to use that connection.
+4. Ask the agent to use that connection. If a vault it needs is locked, BlindDrop asks you to unlock it.
 
-With several vaults, Unlock remembers your last successful choice. Opening one vault gives you the workspace; others stay locked. **Unlock multiple…** prompts once for each vault's own passphrase, and you can Skip or Stop without undoing completed unlocks. A connection can select just the vaults it needs. After access changes, a running agent may need Claude Code's `/reload-plugins` or a new Codex session.
+With several vaults, Unlock remembers your last successful choice. Opening one vault gives you the workspace; others stay locked. **Unlock multiple…** prompts once for each vault's own passphrase, and you can Skip or Stop without undoing completed unlocks. A connection can select just the vaults it needs.
 
 Connections hold service origins and authentication settings; Secrets hold the encrypted credentials they reference. A template identifies the credentials it needs. When editing a connection, you can choose an existing stored secret without re-entering its value. **Import .env** uses Node's standard dotenv parsing and lets you review names and selected rows before anything is saved.
 
-Closing the window keeps the current session running. A normal Dock or menu-bar click reopens it; right-clicking the menu-bar icon offers Open and Quit. **Settings → General → Show Dock icon** can hide the Dock icon while leaving menu-bar access available. **Settings → Security** sets automatic-lock defaults; **Settings → Vaults** can override them for one vault. **Lock All** revokes access, including with no window open; **Quit** stops the app. Every launch starts locked.
+Closing the window keeps the current session running. A normal Dock or menu-bar click reopens it; right-clicking the menu-bar icon offers Open and Quit. **Settings → General → Show Dock icon** can hide the Dock icon while leaving menu-bar access available. **Settings → Security** sets automatic-lock defaults; **Settings → Vaults** can override them for one vault. **Lock All** revokes access, including with no window open; **Quit** stops the app. Every launch starts locked; a vault set to Touch ID or Without asking in **Settings → Vaults → Unlock** then opens without its passphrase when an agent's call needs it or Unlock selects it at launch, Touch ID after a touch.
 
-To upgrade, quit BlindDrop, replace the app in Applications, then reopen it. Vaults and configuration stay outside the app bundle. There is no automatic updater; use the [release page](https://github.com/IluvatarLabs/blinddrop/releases). If you move the app, use **Update** beside each installed integration to refresh its bundled-helper path.
+To upgrade, quit BlindDrop, replace the app in Applications, then reopen it. Vaults and configuration stay outside the app bundle. There is no automatic updater; use the [release page](https://github.com/IluvatarLabs/blinddrop/releases). The app refreshes installed integrations at every launch, so a moved or replaced app keeps working. After upgrading from an earlier version, start one new Claude Code or Codex session.
 
 ### Optional command-line package
 
-The CLI requires Node.js 22.13+ on the 22.x line or 23.5+, and npm. Download `blinddrop-0.6.1.tgz` from the release and install that file by its local path:
+The CLI requires Node.js 22.13+ on the 22.x line or 23.5+, and npm. Download `blinddrop-0.6.2.tgz` from the release and install that file by its local path:
 
 ```sh
-npm install --global --prefix "$HOME/.local" ./blinddrop-0.6.1.tgz
+npm install --global --prefix "$HOME/.local" ./blinddrop-0.6.2.tgz
 export PATH="$HOME/.local/bin:$PATH"
 blinddrop --help
 ```
@@ -130,10 +131,10 @@ For another API, use its HTTPS origin and authentication format. See the
 - `blinddrop ui` opens an owner page in your browser to create, open, unlock or
   lock any of several vaults, and to manage typed multi-field secrets,
   connection groups and static connection templates through the Connections,
-  Secrets and Activity views. Unlocking a vault starts or recomputes the
-  implicit agent session; locking every vault or quitting ends it. The macOS
-  app in `desktop/` shows the same page. Closing its main window leaves the app
-  and any unlocked session running from the menu bar; Quit ends the session.
+  Secrets and Activity views. While it runs, agents reach it through one
+  endpoint, locked or unlocked; a call that needs a locked vault brings up its
+  unlock. The macOS app in `desktop/` shows the same page. Closing its main
+  window leaves the app running from the menu bar; Quit ends agent access.
   See the
   [configuration reference](CONFIGURATION.md#owner-gui).
 - App-managed [agent integrations](plugin/README.md) install, update and remove BlindDrop's Claude Code/local Codex plugin through each host's native plugin mechanism. Skills teach the workflow, supported hooks provide guidance, and authenticated MCP tools execute it. Configuration status is separate from a successful request. Unrelated host configuration is preserved.
@@ -150,22 +151,21 @@ Terminal sessions created by `serve` or `run` last one hour by default;
 `--ttl SECONDS` changes that. Stopping or expiring the helper ends its session.
 A new session gets a new token. The owner page and app instead recompute their
 implicit session as vaults and records change. The MCP tools are
-`list_connections` and `execute_http`.
+`list_connections`, `execute_http` and, for Modal connections,
+`invoke_modal_function`.
 
 App and CLI HTTP sessions share a randomly chosen port saved in Settings. If it
 is busy, BlindDrop advances to the next available port and saves the actual
 listener. Change the preference in **Settings → Sessions** or with CLI
 `--port PORT`; explicit `--port 0` stays temporary. App-managed integrations
-follow the actual endpoint. For a manually configured plugin, set
-`BLINDDROP_MCP_URL` to the reported `mcpUrl` before starting the host, and
-restart or reload the host if that URL changes. The headers helper refreshes the
-session credential, but cannot change the host's configured URL.
+follow the actual endpoint without a host reload.
 
 The [client guide](CLIENTS.md) covers MCP configuration, the Claude SDK,
 ordinary HTTP clients, and OAuth APIs. BlindDrop supports common API-key
 placements, Basic authentication, OAuth grants, JWT bearer exchange, AWS
 SigV4, and client TLS certificates. Native database connections, SSH,
-WebSocket, gRPC, and browser login automation are outside this release.
+WebSocket, gRPC, and browser login automation are outside this release, except
+the bounded Modal Function invocation through Modal's official SDK.
 
 ## Your vault
 
@@ -187,11 +187,12 @@ passphrase and lock state. A typed secret can hold several named fields, and a
 connection refers to the fields it needs as `vault#secret#field`.
 `connections.json` contains no stored secret values.
 
-While a session started from the owner page or the app is running with the
-session-file option on, `session.json` holds that session's local URL and token
-at mode 0600 and is removed when the session ends.
+While the app or `blinddrop ui` runs with Agent access on, `session.json` holds
+the agent endpoint's local URL and token at mode 0600. It is removed when the
+app quits or Agent access is turned off. In the Mac app, `quick-unlock.json`
+holds the sealed passphrases of vaults set to Touch ID or Without asking.
 
-Use **Back Up Setup** to copy all registered encrypted vaults plus connection definitions, registry, groups and settings. Each vault retains its own passphrase. The other files are owner-only plaintext metadata and references; session tokens and Activity are excluded. A missing archive fails the backup instead of silently producing an incomplete copy.
+Use **Back Up Setup** to copy all registered encrypted vaults plus connection definitions, registry, groups and settings. Each vault retains its own passphrase. The other files are owner-only plaintext metadata and references; session tokens, sealed passphrases and Activity are excluded. A missing archive fails the backup instead of silently producing an incomplete copy.
 
 Use **Restore Setup** before adding vault or connection data to a new installation. A first launch containing only saved preferences is accepted and those preferences are replaced by the backup. Registered vaults, connections, groups or unknown files prevent restore. Restore rebases archive paths, starts with every vault locked, and never merges or overwrites existing data. **Export Encrypted Vault** copies one archive only. There is no passphrase recovery bypass. `blinddrop passwd` re-encrypts the selected vault; older backups still need their old passphrase.
 

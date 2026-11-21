@@ -1,4 +1,4 @@
-// Phase 1 (v0.5.1 "blinddrop") functional tests: typed multi-field secrets,
+// Functional tests: typed multi-field secrets,
 // vault-qualified references, multiple vaults, and migration. Every test drives
 // the real built runtime against a disposable HTTPS receiver with generated
 // credentials, in temp vaults under a scratch HOME. No mocks, no synthetic

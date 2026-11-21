@@ -31,6 +31,7 @@ import type {
   Authentication,
   ClientTlsReferences,
   Connection,
+  OAuthConsent,
   Secret,
   VaultData,
   VaultRegistry,
@@ -309,7 +310,8 @@ const AuthenticationSchema = z.discriminatedUnion("type", [
       type: z.literal("oauth2"),
       tokenEndpoint: TokenEndpointSchema,
       grant: z.enum(["client_credentials", "refresh_token"]),
-      clientId: StaticFieldSchema,
+      clientId: StaticFieldSchema.optional(),
+      clientIdSecret: SecretReferenceSchema.optional(),
       clientSecret: SecretReferenceSchema.optional(),
       refreshSecret: SecretReferenceSchema.optional(),
       clientAuth: z.enum(["basic", "body", "none"]),
@@ -337,6 +339,13 @@ const AuthenticationSchema = z.discriminatedUnion("type", [
       sessionTokenSecret: SecretReferenceSchema.optional(),
       region: StaticFieldSchema,
       service: StaticFieldSchema,
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("modal"),
+      tokenIdSecret: SecretReferenceSchema,
+      tokenSecretSecret: SecretReferenceSchema,
     })
     .strict(),
 ]).superRefine((auth, context) => {
@@ -375,6 +384,9 @@ const AuthenticationSchema = z.discriminatedUnion("type", [
   }
 
   if (auth.type === "oauth2") {
+    if ((auth.clientId === undefined) === (auth.clientIdSecret === undefined)) {
+      context.addIssue({ code: "custom", message: "exactly one client id source is required" });
+    }
     if (
       (auth.clientAuth === "basic" || auth.clientAuth === "body") &&
       auth.clientSecret === undefined
@@ -393,6 +405,101 @@ const AuthenticationSchema = z.discriminatedUnion("type", [
   }
 });
 
+// The owner consent settings reuse the `oauth login` definition rules
+// (src/oauth-login.ts): exact HTTPS issuer/endpoint strings, bounded extra
+// parameters that cannot override generated protocol fields, and a port.
+const MAX_CONSENT_URL_BYTES = 2_048;
+const MAX_AUTHORIZATION_PARAMETERS = 32;
+const MAX_AUTHORIZATION_PARAMETER_NAME_BYTES = 128;
+const MAX_AUTHORIZATION_PARAMETER_VALUE_BYTES = 4_096;
+const AUTHORIZATION_PARAMETER_NAME = /^[A-Za-z0-9._~-]+$/u;
+export const PROTECTED_AUTHORIZATION_PARAMETERS: ReadonlySet<string> = new Set([
+  "audience",
+  "client_id",
+  "code_challenge",
+  "code_challenge_method",
+  "redirect_uri",
+  "resource",
+  "request",
+  "request_uri",
+  "response_mode",
+  "response_type",
+  "scope",
+  "state",
+]);
+
+function isFixedHttpsUrl(value: string): boolean {
+  if (
+    value.length === 0 ||
+    value.trim() !== value ||
+    Buffer.byteLength(value, "utf8") > MAX_CONSENT_URL_BYTES ||
+    /[\u0000-\u001f\u007f]/u.test(value)
+  ) {
+    return false;
+  }
+  try {
+    const parsed = new URL(value);
+    // OAuth issuer identifiers use exact string comparison (RFC 9207), so the
+    // stored string is kept as entered rather than normalized.
+    return parsed.protocol === "https:" && parsed.username === "" && parsed.password === "" &&
+      parsed.hash === "" && parsed.search === "" && parsed.origin !== "null";
+  } catch {
+    return false;
+  }
+}
+
+const FixedHttpsUrlSchema = z.string().refine(isFixedHttpsUrl);
+
+const AuthorizationParametersSchema = z
+  .record(
+    z.string().refine((name) =>
+      Buffer.byteLength(name, "utf8") <= MAX_AUTHORIZATION_PARAMETER_NAME_BYTES &&
+      AUTHORIZATION_PARAMETER_NAME.test(name) &&
+      !PROTECTED_AUTHORIZATION_PARAMETERS.has(name.toLowerCase())),
+    z.string().refine((value) =>
+      Buffer.byteLength(value, "utf8") <= MAX_AUTHORIZATION_PARAMETER_VALUE_BYTES &&
+      !/[\u0000-\u001f\u007f]/u.test(value)),
+  )
+  .refine((parameters) => Object.keys(parameters).length <= MAX_AUTHORIZATION_PARAMETERS);
+
+const OAuthConsentSchema = z
+  .object({
+    issuer: FixedHttpsUrlSchema,
+    authorizationEndpoint: FixedHttpsUrlSchema,
+    authorizationParameters: AuthorizationParametersSchema.optional(),
+    redirectPort: z.number().int().min(0).max(65_535).optional(),
+  })
+  .strict();
+
+// Modal's own name rules (modal-client `name_utils.py`): an App name is up to
+// 64 letters, digits, dots, underscores or hyphens, and an Environment name
+// starts with a letter or digit. A Function is named by its Python name or a
+// custom `name=`; a dotted name addresses a Cls method, which
+// `functions.fromName` rejects. Usage is owner prose, never executed.
+const MODAL_APP_PATTERN = /^[A-Za-z0-9._-]{1,64}$/;
+const MODAL_ENVIRONMENT_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const MODAL_FUNCTION_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
+const MAX_MODAL_USAGE_BYTES = 2_048;
+export const MODAL_ORIGIN = "https://api.modal.com";
+
+const ModalTargetSchema = z
+  .object({
+    app: z.string().regex(MODAL_APP_PATTERN),
+    function: z.string().regex(MODAL_FUNCTION_PATTERN),
+    environment: z.string().regex(MODAL_ENVIRONMENT_PATTERN),
+    usage: z
+      .string()
+      .min(1)
+      .refine((value) =>
+        Buffer.byteLength(value, "utf8") <= MAX_MODAL_USAGE_BYTES &&
+        !/[\u0000-\u0008\u000b-\u001f\u007f]/u.test(value))
+      .optional(),
+  })
+  .strict();
+
+// A recipe id doubles as a provider bundle's secret type, so it fits that pattern.
+const RECIPE_ID_PATTERN = /^[a-z][a-z0-9-]{0,31}$/;
+
 const ClientTlsReferencesSchema = z
   .object({
     certificateSecret: SecretReferenceSchema,
@@ -408,11 +515,24 @@ const ConnectionSchema = z
     allowPrivate: z.boolean(),
     enabled: z.boolean(),
     tls: ClientTlsReferencesSchema.optional(),
+    recipe: z.string().regex(RECIPE_ID_PATTERN).optional(),
+    consent: OAuthConsentSchema.optional(),
+    modal: ModalTargetSchema.optional(),
   })
   .strict()
   .superRefine((connection, context) => {
     if (connection.auth.type === "none" && connection.tls === undefined) {
       context.addIssue({ code: "custom", message: "unauthenticated connections need TLS credentials" });
+    }
+    if (connection.consent !== undefined &&
+        (connection.auth.type !== "oauth2" || connection.auth.grant !== "refresh_token")) {
+      context.addIssue({ code: "custom", message: "consent needs an OAuth refresh grant" });
+    }
+    if ((connection.auth.type === "modal") !== (connection.modal !== undefined)) {
+      context.addIssue({ code: "custom", message: "a Modal target needs Modal authentication" });
+    }
+    if (connection.auth.type === "modal" && (connection.tls !== undefined || connection.allowPrivate)) {
+      context.addIssue({ code: "custom", message: "Modal connections use the SDK transport" });
     }
   });
 
@@ -582,10 +702,21 @@ function normalizeConnection(
   connection: z.infer<typeof ConnectionSchema>,
   error: "INVALID_INPUT" | "VAULT_INVALID",
 ): Connection {
-  return {
-    ...connection,
-    origin: normalizeOrigin(connection.origin, error),
-  };
+  const origin = normalizeOrigin(connection.origin, error);
+  // The SDK chooses Modal's service itself; the origin only names it.
+  if (connection.auth.type === "modal" && origin !== MODAL_ORIGIN) {
+    throw new BlindDropError(error);
+  }
+  return { ...connection, origin };
+}
+
+/** Validates owner consent settings with the same rules as a stored connection. */
+export function validateOAuthConsent(value: unknown): OAuthConsent {
+  const parsed = OAuthConsentSchema.safeParse(value);
+  if (!parsed.success) {
+    throw new BlindDropError("INVALID_INPUT");
+  }
+  return parsed.data;
 }
 
 function deriveKey(passphrase: string, salt: Buffer): Buffer {
@@ -906,6 +1037,7 @@ function migrateAuthentication(auth: Authentication): Authentication {
     case "oauth2":
       return {
         ...auth,
+        ...(auth.clientIdSecret === undefined ? {} : { clientIdSecret: migrateReference(auth.clientIdSecret) }),
         ...(auth.clientSecret === undefined ? {} : { clientSecret: migrateReference(auth.clientSecret) }),
         ...(auth.refreshSecret === undefined ? {} : { refreshSecret: migrateReference(auth.refreshSecret) }),
       };
@@ -917,6 +1049,12 @@ function migrateAuthentication(auth: Authentication): Authentication {
         accessKeyIdSecret: migrateReference(auth.accessKeyIdSecret),
         secretAccessKeySecret: migrateReference(auth.secretAccessKeySecret),
         ...(auth.sessionTokenSecret === undefined ? {} : { sessionTokenSecret: migrateReference(auth.sessionTokenSecret) }),
+      };
+    case "modal":
+      return {
+        ...auth,
+        tokenIdSecret: migrateReference(auth.tokenIdSecret),
+        tokenSecretSecret: migrateReference(auth.tokenSecretSecret),
       };
   }
 }
